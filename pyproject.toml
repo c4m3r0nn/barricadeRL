@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "barricade-rl"
+version = "0.1.0"
+description = "Gymnasium environment and playable UI for Barricade"
+readme = "recommended_stack.md"
+requires-python = ">=3.10"
+dependencies = [
+  "gymnasium>=0.29",
+  "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+rl = [
+  "torch",
+  "stable-baselines3",
+  "sb3-contrib",
+  "tensorboard",
+]
+
+[project.scripts]
+barricade-play = "barricade_rl.ui_tk:main"
+barricade-benchmark = "barricade_rl.benchmark:main"
+barricade-evaluate = "barricade_rl.evaluate:main"
+barricade-train-maskable-ppo = "barricade_rl.train_maskable_ppo:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
