@@ -7,6 +7,30 @@ from barricade_rl.opponents import make_opponent
 from barricade_rl.single_agent import BarricadeSingleAgentEnv
 
 
+def make_training_env(opponent_name: str):
+    from sb3_contrib.common.wrappers import ActionMasker
+    from stable_baselines3.common.monitor import Monitor
+
+    def mask_fn(env):
+        return env.action_masks()
+
+    return Monitor(ActionMasker(BarricadeSingleAgentEnv(opponent=make_opponent(opponent_name)), mask_fn))
+
+
+def build_model(env, seed: int, tensorboard_log: Path | str, n_steps: int = 512, batch_size: int = 128, verbose: int = 1):
+    from sb3_contrib import MaskablePPO
+
+    return MaskablePPO(
+        "MlpPolicy",
+        env,
+        verbose=verbose,
+        seed=seed,
+        tensorboard_log=str(tensorboard_log),
+        n_steps=n_steps,
+        batch_size=batch_size,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smoke-train MaskablePPO on Barricade.")
     parser.add_argument("--timesteps", type=int, default=10_000)
@@ -16,19 +40,13 @@ def main():
     args = parser.parse_args()
 
     try:
-        from sb3_contrib import MaskablePPO
         from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
-        from sb3_contrib.common.wrappers import ActionMasker
-        from stable_baselines3.common.monitor import Monitor
     except ImportError as exc:
         raise SystemExit("Install RL dependencies first: .venv/bin/python -m pip install -e '.[dev,rl]'") from exc
 
-    def mask_fn(env):
-        return env.action_masks()
-
     args.out.mkdir(parents=True, exist_ok=True)
-    train_env = Monitor(ActionMasker(BarricadeSingleAgentEnv(opponent=make_opponent(args.opponent)), mask_fn))
-    eval_env = Monitor(ActionMasker(BarricadeSingleAgentEnv(opponent=make_opponent(args.opponent)), mask_fn))
+    train_env = make_training_env(args.opponent)
+    eval_env = make_training_env(args.opponent)
     eval_callback = MaskableEvalCallback(
         eval_env,
         best_model_save_path=str(args.out / "best"),
@@ -37,15 +55,7 @@ def main():
         deterministic=True,
         render=False,
     )
-    model = MaskablePPO(
-        "CnnPolicy",
-        train_env,
-        verbose=1,
-        seed=args.seed,
-        tensorboard_log=str(args.out / "tb"),
-        n_steps=512,
-        batch_size=128,
-    )
+    model = build_model(train_env, seed=args.seed, tensorboard_log=args.out / "tb")
     model.learn(total_timesteps=args.timesteps, callback=eval_callback, progress_bar=False)
     model.save(args.out / "final_model")
     print(f"Saved model to {args.out / 'final_model.zip'}")

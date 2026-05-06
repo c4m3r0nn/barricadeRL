@@ -211,6 +211,8 @@ After installing RL dependencies, run a short smoke-training job:
 
 Outputs are written under `runs/maskable_ppo_barricade/` by default.
 
+The smoke trainer currently uses `MlpPolicy`, which flattens the small `(6, 9, 9)` observation. A custom small CNN can be added later once the training loop and evaluation workflow are stable.
+
 ## Current Status
 
 Implemented:
