@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from barricade_rl.opponents import make_opponent
+from barricade_rl.replay import record_model_game, save_replay
 from barricade_rl.single_agent import BarricadeSingleAgentEnv
 
 
@@ -31,16 +32,53 @@ def build_model(env, seed: int, tensorboard_log: Path | str, n_steps: int = 512,
     )
 
 
+class MilestoneReplayCallback:
+    def __init__(self, out_dir: Path, opponent_name: str, replay_freq: int, seed: int):
+        from stable_baselines3.common.callbacks import BaseCallback
+
+        class _Callback(BaseCallback):
+            def __init__(self):
+                super().__init__()
+                self.next_replay_step = replay_freq
+
+            def _on_step(self) -> bool:
+                if replay_freq <= 0:
+                    return True
+                if self.num_timesteps < self.next_replay_step:
+                    return True
+                replay_dir = out_dir / "replays"
+                frames = record_model_game(
+                    self.model,
+                    opponent_name=opponent_name,
+                    seed=seed + self.num_timesteps,
+                )
+                save_replay(
+                    replay_dir / f"replay_{self.num_timesteps}.json",
+                    frames,
+                    metadata={
+                        "timesteps": self.num_timesteps,
+                        "opponent": opponent_name,
+                        "seed": seed + self.num_timesteps,
+                    },
+                )
+                self.next_replay_step += replay_freq
+                return True
+
+        self.callback = _Callback()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Smoke-train MaskablePPO on Barricade.")
     parser.add_argument("--timesteps", type=int, default=10_000)
     parser.add_argument("--opponent", choices=["random", "greedy"], default="random")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path("runs/maskable_ppo_barricade"))
+    parser.add_argument("--replay-freq", type=int, default=1_000, help="Save one replay every N timesteps. Use 0 to disable.")
     args = parser.parse_args()
 
     try:
         from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+        from stable_baselines3.common.callbacks import CallbackList
     except ImportError as exc:
         raise SystemExit("Install RL dependencies first: .venv/bin/python -m pip install -e '.[dev,rl]'") from exc
 
@@ -55,8 +93,10 @@ def main():
         deterministic=True,
         render=False,
     )
+    replay_callback = MilestoneReplayCallback(args.out, args.opponent, args.replay_freq, args.seed).callback
+    callbacks = CallbackList([eval_callback, replay_callback])
     model = build_model(train_env, seed=args.seed, tensorboard_log=args.out / "tb")
-    model.learn(total_timesteps=args.timesteps, callback=eval_callback, progress_bar=False)
+    model.learn(total_timesteps=args.timesteps, callback=callbacks, progress_bar=False)
     model.save(args.out / "final_model")
     print(f"Saved model to {args.out / 'final_model.zip'}")
 

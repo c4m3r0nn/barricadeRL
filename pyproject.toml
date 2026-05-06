@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "barricade-rl"
 version = "0.1.0"
 description = "Gymnasium environment and playable UI for Barricade"
-readme = "recommended_stack.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "gymnasium>=0.29",

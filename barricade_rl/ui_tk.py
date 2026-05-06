@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import argparse
 import tkinter as tk
 from tkinter import messagebox
+from pathlib import Path
 
 from barricade_rl.core import (
     BOARD_SIZE,
@@ -11,6 +13,7 @@ from barricade_rl.core import (
     decode_wall_action,
     wall_action,
 )
+from barricade_rl.replay import apply_frame, load_replay
 
 CELL = 56
 MARGIN = 32
@@ -21,11 +24,15 @@ PLAYER_COLORS = ("#1f77b4", "#d1495b")
 
 
 class BarricadeUI:
-    def __init__(self):
+    def __init__(self, replay_path: Path | None = None):
         self.game = BarricadeGame()
         self.drag_wall_orientation: str | None = None
         self.drag_xy: tuple[int, int] | None = None
         self.wall_token_bounds: dict[str, tuple[int, int, int, int]] = {}
+        self.replay_path = replay_path
+        self.replay_frames: list[dict] = []
+        self.replay_index = 0
+        self.replay_playing = False
         self.root = tk.Tk()
         self.root.title("Barricade RL Test UI")
         width = MARGIN * 2 + CELL * BOARD_SIZE + SIDE_PANEL_WIDTH
@@ -36,12 +43,30 @@ class BarricadeUI:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_button_release)
         self.root.bind("<Key>", self.on_key)
+        if replay_path is not None:
+            replay = load_replay(replay_path)
+            self.replay_frames = replay["frames"]
+            if self.replay_frames:
+                apply_frame(self.game, self.replay_frames[0])
         self.draw()
 
     def run(self):
         self.root.mainloop()
 
     def on_key(self, event):
+        if self.replay_frames:
+            if event.keysym in {"Right", "n"}:
+                self.set_replay_index(self.replay_index + 1)
+            elif event.keysym in {"Left", "p"}:
+                self.set_replay_index(self.replay_index - 1)
+            elif event.keysym == "space":
+                self.replay_playing = not self.replay_playing
+                if self.replay_playing:
+                    self.play_next_replay_frame()
+            elif event.char.lower() == "r":
+                self.set_replay_index(0)
+            return
+
         keymap = {"Up": 0, "Down": 1, "Left": 2, "Right": 3, "w": 0, "s": 1, "a": 2, "d": 3}
         if event.keysym in keymap:
             self.try_action(keymap[event.keysym])
@@ -50,6 +75,8 @@ class BarricadeUI:
             self.draw()
 
     def on_button_press(self, event):
+        if self.replay_frames:
+            return
         for orientation, bounds in self.wall_token_bounds.items():
             x0, y0, x1, y1 = bounds
             if x0 <= event.x <= x1 and y0 <= event.y <= y1:
@@ -67,12 +94,16 @@ class BarricadeUI:
             self.try_move_to((row, col))
 
     def on_drag(self, event):
+        if self.replay_frames:
+            return
         if self.drag_wall_orientation is None:
             return
         self.drag_xy = (event.x, event.y)
         self.draw()
 
     def on_button_release(self, event):
+        if self.replay_frames:
+            return
         if self.drag_wall_orientation is None:
             return
         orientation = self.drag_wall_orientation
@@ -89,6 +120,22 @@ class BarricadeUI:
             if self.game.move_destination(action) == pos:
                 self.try_action(action)
                 return
+
+    def set_replay_index(self, index: int):
+        if not self.replay_frames:
+            return
+        self.replay_index = max(0, min(index, len(self.replay_frames) - 1))
+        apply_frame(self.game, self.replay_frames[self.replay_index])
+        self.draw()
+
+    def play_next_replay_frame(self):
+        if not self.replay_playing:
+            return
+        if self.replay_index >= len(self.replay_frames) - 1:
+            self.replay_playing = False
+            return
+        self.set_replay_index(self.replay_index + 1)
+        self.root.after(500, self.play_next_replay_frame)
 
     def try_action(self, action: int):
         if not self.game.apply_action(action):
@@ -177,6 +224,9 @@ class BarricadeUI:
     def draw_side_panel(self):
         x = self.side_panel_x()
         y = MARGIN
+        if self.replay_frames:
+            self.draw_replay_panel(x, y)
+            return
         player = self.game.state.current_player
         self.canvas.create_text(x, y, text="Barricade", anchor="nw", fill="#232323", font=("Helvetica", 18, "bold"))
         banner_y = y + 42
@@ -213,6 +263,28 @@ class BarricadeUI:
         if remaining <= 0:
             self.canvas.create_text(x, y + 148, text="No walls left", anchor="nw", fill="#8a3b3b", font=("Helvetica", 12, "bold"))
 
+    def draw_replay_panel(self, x: int, y: int):
+        frame = self.replay_frames[self.replay_index]
+        title = self.replay_path.name if self.replay_path else "Replay"
+        self.canvas.create_text(x, y, text="Replay", anchor="nw", fill="#232323", font=("Helvetica", 18, "bold"))
+        self.canvas.create_text(x, y + 34, text=title, anchor="nw", fill="#454545", font=("Helvetica", 11))
+        self.canvas.create_text(
+            x,
+            y + 72,
+            text=f"Frame {self.replay_index + 1} / {len(self.replay_frames)}",
+            anchor="nw",
+            fill="#232323",
+            font=("Helvetica", 14, "bold"),
+        )
+        self.canvas.create_text(x, y + 112, text=f"Turn: Player {self.game.state.current_player}", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 136, text=f"Winner: {self.game.state.winner}", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 172, text=f"Learner action: {frame.get('learner_action')}", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 196, text=f"Opponent action: {frame.get('opponent_action')}", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 244, text="Right/N: next", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 268, text="Left/P: previous", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 292, text="Space: play/pause", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 316, text="R: restart replay", anchor="nw", fill="#454545", font=("Helvetica", 12))
+
     def draw_drag_preview(self):
         if self.drag_wall_orientation is None or self.drag_xy is None:
             return
@@ -232,7 +304,10 @@ class BarricadeUI:
 
 
 def main():
-    BarricadeUI().run()
+    parser = argparse.ArgumentParser(description="Play Barricade or view a saved replay.")
+    parser.add_argument("--replay", type=Path, help="Path to a replay JSON file from training.")
+    args = parser.parse_args()
+    BarricadeUI(replay_path=args.replay).run()
 
 
 if __name__ == "__main__":

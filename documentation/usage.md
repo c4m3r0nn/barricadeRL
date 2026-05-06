@@ -27,6 +27,12 @@ Controls:
 - Click a reachable board dot to move there.
 - `R` resets the game.
 
+Open a training replay:
+
+```bash
+.venv/bin/barricade-play --replay runs/maskable_ppo_barricade/replays/replay_1000.json
+```
+
 ## Training Environment
 
 ```python
@@ -59,4 +65,17 @@ Then run:
 
 ```bash
 .venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent random
+```
+
+Watch metrics during or after training:
+
+```bash
+.venv/bin/tensorboard --logdir runs
+```
+
+On Windows, replace `.venv/bin/` with `.\.venv\Scripts\` and use `.exe` console scripts, for example:
+
+```powershell
+.\.venv\Scripts\barricade-play.exe
+.\.venv\Scripts\tensorboard.exe --logdir runs
 ```

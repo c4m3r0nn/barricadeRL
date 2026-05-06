@@ -35,9 +35,35 @@ tests/
   test_evaluate.py # Evaluation helper tests
 ```
 
+## Windows Support
+
+This project should work on Windows. The core code is pure Python plus NumPy/Gymnasium, and the UI uses Tkinter, which is included with the standard Python installer from python.org.
+
+Use PowerShell commands on Windows:
+
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[dev]"
+.\.venv\Scripts\python -m pytest -q
+```
+
+Run the UI on Windows:
+
+```powershell
+.\.venv\Scripts\barricade-play.exe
+```
+
+Install RL extras on Windows:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e ".[dev,rl]"
+```
+
+If Tkinter is missing, reinstall Python from python.org and make sure the Tcl/Tk option is enabled. If PyTorch install fails, install PyTorch using the command from the official PyTorch selector for your Windows machine, then rerun the project install.
+
 ## Requirements
 
-You need Python 3.10 or newer. On macOS, Python from Homebrew or pyenv is fine.
+You need Python 3.10 or newer. Python 3.11 is a conservative choice across macOS and Windows.
 
 The basic environment only needs:
 
@@ -85,6 +111,19 @@ Controls:
 - `R` resets the game.
 
 The right panel shows whose turn it is, how many walls the current player has left, and the draggable wall pieces. The active pawn also has a colored ring.
+
+Open a saved training replay in the same UI:
+
+```bash
+.venv/bin/barricade-play --replay runs/maskable_ppo_barricade/replays/replay_1000.json
+```
+
+Replay controls:
+
+- Right arrow or `N` steps forward.
+- Left arrow or `P` steps backward.
+- Space plays or pauses.
+- `R` restarts the replay.
 
 ## Wall Behavior
 
@@ -212,6 +251,50 @@ After installing RL dependencies, run a short smoke-training job:
 Outputs are written under `runs/maskable_ppo_barricade/` by default.
 
 The smoke trainer currently uses `MlpPolicy`, which flattens the small `(6, 9, 9)` observation. A custom small CNN can be added later once the training loop and evaluation workflow are stable.
+
+## Visualize Training Progress
+
+Training writes TensorBoard logs under the run directory:
+
+```bash
+.venv/bin/tensorboard --logdir runs
+```
+
+Then open the URL TensorBoard prints, usually:
+
+```text
+http://localhost:6006
+```
+
+Useful charts:
+
+- `rollout/ep_rew_mean`: average training episode reward.
+- `rollout/ep_len_mean`: average episode length.
+- `eval/mean_reward`: evaluation reward at checkpoints.
+- `train/entropy_loss`: policy randomness.
+- `train/value_loss`: value function fit.
+
+The trainer also saves replay files at milestones:
+
+```text
+runs/maskable_ppo_barricade/replays/replay_1000.json
+runs/maskable_ppo_barricade/replays/replay_2000.json
+...
+```
+
+View one in the UI:
+
+```bash
+.venv/bin/barricade-play --replay runs/maskable_ppo_barricade/replays/replay_1000.json
+```
+
+Control replay frequency with:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent random --replay-freq 1000
+```
+
+Use `--replay-freq 0` to disable replay saving.
 
 ## Current Status
 
