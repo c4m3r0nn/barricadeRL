@@ -35,31 +35,154 @@ tests/
   test_evaluate.py # Evaluation helper tests
 ```
 
-## Windows Support
+## Windows Tutorial
 
-This project should work on Windows. The core code is pure Python plus NumPy/Gymnasium, and the UI uses Tkinter, which is included with the standard Python installer from python.org.
+This project should work on Windows. The core code is pure Python plus NumPy/Gymnasium, and the UI uses Tkinter, which is included with the normal Python installer from python.org.
 
-Use PowerShell commands on Windows:
+These instructions assume PowerShell and Python 3.11.
+
+### 1. Install Python
+
+1. Download Python 3.11 from <https://www.python.org/downloads/windows/>.
+2. During install, check `Add python.exe to PATH`.
+3. Keep `tcl/tk and IDLE` enabled. This is needed for the playable UI.
+4. Open PowerShell and check Python:
+
+```powershell
+py -3.11 --version
+```
+
+### 2. Open The Project
+
+In PowerShell, move into the project folder. Example:
+
+```powershell
+cd C:\Users\YourName\Projects\barricadeRL
+```
+
+### 3. Create A Virtual Environment
 
 ```powershell
 py -3.11 -m venv .venv
+```
+
+You can either use the full `.venv\Scripts\python` path in commands, or activate the environment:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+If PowerShell blocks activation scripts, run this once for the current terminal session:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+.\.venv\Scripts\Activate.ps1
+```
+
+### 4. Install The Basic Project
+
+```powershell
+.\.venv\Scripts\python -m pip install -U pip
 .\.venv\Scripts\python -m pip install -e ".[dev]"
+```
+
+### 5. Run Tests
+
+```powershell
 .\.venv\Scripts\python -m pytest -q
 ```
 
-Run the UI on Windows:
+You should see all tests pass.
+
+### 6. Play The Game UI
 
 ```powershell
 .\.venv\Scripts\barricade-play.exe
 ```
 
-Install RL extras on Windows:
+If this fails with a Tkinter error, reinstall Python from python.org and make sure `tcl/tk and IDLE` is selected.
+
+### 7. Install RL Dependencies
 
 ```powershell
 .\.venv\Scripts\python -m pip install -e ".[dev,rl]"
 ```
 
-If Tkinter is missing, reinstall Python from python.org and make sure the Tcl/Tk option is enabled. If PyTorch install fails, install PyTorch using the command from the official PyTorch selector for your Windows machine, then rerun the project install.
+This installs PyTorch, Stable-Baselines3, `sb3-contrib`, and TensorBoard.
+
+If PyTorch install fails, use the official command from <https://pytorch.org/get-started/locally/> for your Windows machine, then rerun:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e ".[dev,rl]"
+```
+
+### 8. Run A Short Training Job
+
+```powershell
+.\.venv\Scripts\barricade-train-maskable-ppo.exe --timesteps 10000 --opponent random --replay-freq 1000
+```
+
+Outputs are written under:
+
+```text
+runs\maskable_ppo_barricade\
+```
+
+### 9. Watch Training In TensorBoard
+
+In a second PowerShell window from the project folder:
+
+```powershell
+.\.venv\Scripts\tensorboard.exe --logdir runs
+```
+
+Open the URL TensorBoard prints, usually:
+
+```text
+http://localhost:6006
+```
+
+### 10. Watch A Saved Training Replay
+
+Training saves replay JSON files at milestones:
+
+```text
+runs\maskable_ppo_barricade\replays\replay_1000.json
+runs\maskable_ppo_barricade\replays\replay_2000.json
+```
+
+Open one in the UI:
+
+```powershell
+.\.venv\Scripts\barricade-play.exe --replay runs\maskable_ppo_barricade\replays\replay_1000.json
+```
+
+Replay controls:
+
+- Right arrow or `N`: next frame.
+- Left arrow or `P`: previous frame.
+- Space: play or pause.
+- `R`: restart replay.
+
+### 11. Useful Windows Commands
+
+Benchmark environment speed:
+
+```powershell
+.\.venv\Scripts\barricade-benchmark.exe --episodes 100 --opponent random
+```
+
+Evaluate a scripted policy:
+
+```powershell
+.\.venv\Scripts\barricade-evaluate.exe --episodes 100 --policy greedy --opponent random
+```
+
+Run all tests again:
+
+```powershell
+.\.venv\Scripts\python -m pytest -q
+```
 
 ## Requirements
 
