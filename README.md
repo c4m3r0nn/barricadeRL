@@ -2,6 +2,8 @@
 
 Barricade RL is a Python project for building and testing a reinforcement-learning environment for the board game Barricade. The goal is to keep the training environment small and fast while also providing a human-playable UI so the rules can be checked before spending compute on training.
 
+For a detailed learning-oriented explanation of the full workflow and design rationale, read [architecture.md](architecture.md).
+
 The project currently includes:
 
 - A plain Python and NumPy game engine for Barricade rules.
@@ -39,6 +41,10 @@ tests/
   test_core.py # Core correctness tests
   test_single_agent.py # Opponent and single-agent tests
   test_evaluate.py # Evaluation helper tests
+  test_experiments.py # Experiment runner tests
+  test_pettingzoo_env.py # AEC wrapper tests
+  test_replay.py # Replay tests
+  test_training.py # Training smoke tests
 ```
 
 ## Windows Tutorial
@@ -188,6 +194,24 @@ Evaluate a trained model:
 
 ```powershell
 .\.venv\Scripts\barricade-evaluate-model.exe --model runs\maskable_ppo_barricade\best\best_model.zip --episodes 100 --opponent random
+```
+
+Open the experiment dashboard:
+
+```powershell
+.\.venv\Scripts\barricade-experiment-ui.exe
+```
+
+Run the default experiment set:
+
+```powershell
+.\.venv\Scripts\barricade-experiments.exe --root runs\experiments --timesteps 10000 --seed 0
+```
+
+Record one model replay:
+
+```powershell
+.\.venv\Scripts\barricade-record-model-game.exe --model runs\maskable_ppo_barricade\best\best_model.zip --out runs\manual_replay.json
 ```
 
 Run all tests again:
@@ -511,6 +535,18 @@ best/best_model.zip
 replays/*.json
 ```
 
+`metrics.jsonl` is the dashboard's live data source. It is written after rollouts and may include:
+
+```text
+timesteps
+fps
+episodes
+ep_rew_mean
+ep_len_mean
+train_loss
+train_value_loss
+```
+
 Record a replay from any checkpoint manually:
 
 ```bash
@@ -560,9 +596,10 @@ Implemented:
 - Scripted opponents.
 - Training script.
 - Evaluation script.
-- PettingZoo self-play wrapper.
+- PettingZoo AEC-style wrapper.
 - Checkpointing and opponent pools.
 - Optional shaped rewards.
+- Experiment runner and local dashboard.
 
 ## Suggested Next Steps
 

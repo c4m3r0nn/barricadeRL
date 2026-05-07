@@ -7,8 +7,23 @@ from barricade_rl.core import ACTION_COUNT, BOARD_SIZE, BarricadeGame, canonical
 
 try:
     from pettingzoo import AECEnv
+    from pettingzoo.utils import wrappers
 except ImportError:  # Keep base installs usable without PettingZoo.
     AECEnv = object
+    wrappers = None
+
+
+def raw_env(**kwargs):
+    return BarricadeAECEnv(**kwargs)
+
+
+def env(**kwargs):
+    environment = raw_env(**kwargs)
+    if wrappers is None:
+        return environment
+    environment = wrappers.AssertOutOfBoundsWrapper(environment)
+    environment = wrappers.OrderEnforcingWrapper(environment)
+    return environment
 
 
 class BarricadeAECEnv(AECEnv):

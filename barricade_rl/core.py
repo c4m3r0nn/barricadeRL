@@ -91,11 +91,13 @@ class BarricadeGame:
         self.state = BarricadeState()
         self._legal_actions_cache_key = None
         self._legal_actions_cache = None
+        self._shortest_path_cache = {}
 
     def reset(self) -> BarricadeState:
         self.state = BarricadeState()
         self._legal_actions_cache_key = None
         self._legal_actions_cache = None
+        self._shortest_path_cache = {}
         return self.state
 
     @property
@@ -275,6 +277,9 @@ class BarricadeGame:
         return self.shortest_path_length(player) is not None
 
     def shortest_path_length(self, player: int) -> int | None:
+        cache_key = (player, self.state_key())
+        if cache_key in self._shortest_path_cache:
+            return self._shortest_path_cache[cache_key]
         start = self.state.pawns[player]
         target_row = goal_row(player)
         seen = {start}
@@ -282,11 +287,13 @@ class BarricadeGame:
         while queue:
             pos, dist = queue.popleft()
             if pos[0] == target_row:
+                self._shortest_path_cache[cache_key] = dist
                 return dist
             for nxt in self.neighbors(pos):
                 if nxt not in seen:
                     seen.add(nxt)
                     queue.append((nxt, dist + 1))
+        self._shortest_path_cache[cache_key] = None
         return None
 
     def neighbors(self, pos: tuple[int, int]) -> Iterable[tuple[int, int]]:

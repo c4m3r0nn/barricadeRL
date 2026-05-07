@@ -122,3 +122,24 @@ def test_player_one_canonical_actions_rotate_to_absolute_board():
     assert canonical_action_to_absolute(2, player=1) == 3
     assert canonical_action_to_absolute(3, player=1) == 2
     assert canonical_action_to_absolute(wall_action("h", 0, 1), player=1) == wall_action("h", 7, 6)
+
+
+def test_shortest_path_length_is_cached_until_state_changes():
+    game = BarricadeGame()
+    original = game.neighbors
+    calls = {"count": 0}
+
+    def counted(pos):
+        calls["count"] += 1
+        return original(pos)
+
+    game.neighbors = counted
+    first = game.shortest_path_length(0)
+    first_calls = calls["count"]
+    second = game.shortest_path_length(0)
+    assert first == second
+    assert calls["count"] == first_calls
+
+    game.state.pawns[0] = (7, 4)
+    game.shortest_path_length(0)
+    assert calls["count"] > first_calls
