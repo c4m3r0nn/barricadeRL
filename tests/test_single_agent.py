@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from barricade_rl.core import MOVE_ACTIONS, BarricadeGame
-from barricade_rl.opponents import GreedyOpponent, RandomOpponent, make_opponent
+from barricade_rl.opponents import CheckpointPoolOpponent, GreedyOpponent, MixedOpponent, RandomOpponent, make_opponent
 from barricade_rl.single_agent import BarricadeSingleAgentEnv
 
 
@@ -12,6 +12,11 @@ class FixedOpponent:
 
     def select_action(self, game, rng):
         return self.action
+
+
+class FakeModel:
+    def predict(self, obs, deterministic=True, action_masks=None):
+        return int(action_masks.nonzero()[0][0]), None
 
 
 def test_random_opponent_selects_legal_action():
@@ -31,6 +36,25 @@ def test_greedy_opponent_prefers_shorter_path_move():
 def test_make_opponent_rejects_unknown_name():
     with pytest.raises(ValueError):
         make_opponent("missing")
+
+
+def test_mixed_opponent_selects_legal_action():
+    game = BarricadeGame()
+    game.state.current_player = 1
+    action = MixedOpponent(random_probability=0.5).select_action(game, np.random.default_rng(0))
+    assert game.legal_actions_mask()[action]
+
+
+def test_make_opponent_supports_mixed():
+    assert isinstance(make_opponent("mixed"), MixedOpponent)
+
+
+def test_checkpoint_pool_opponent_selects_legal_action():
+    game = BarricadeGame()
+    game.state.current_player = 1
+    opponent = CheckpointPoolOpponent(models=[FakeModel()])
+    action = opponent.select_action(game, np.random.default_rng(0))
+    assert game.legal_actions_mask()[action]
 
 
 def test_single_agent_step_returns_to_learner_turn_after_opponent():
@@ -72,3 +96,11 @@ def test_single_agent_action_mask_is_for_learner_turn():
     mask = env.action_masks()
     assert mask.shape == (132,)
     assert mask[: len(MOVE_ACTIONS)].tolist() == [True, False, True, True]
+
+
+def test_single_agent_shaped_reward_adds_path_delta():
+    env = BarricadeSingleAgentEnv(opponent=FixedOpponent(1), shaped_reward=True)
+    env.reset()
+    obs, reward, terminated, truncated, info = env.step(0)
+    assert reward > 0
+    assert info["shaped_reward"] > 0

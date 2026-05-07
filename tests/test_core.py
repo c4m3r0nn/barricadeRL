@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from barricade_rl.core import ACTION_COUNT, BarricadeGame, wall_action
+from barricade_rl.core import ACTION_COUNT, BarricadeGame, canonical_action_to_absolute, wall_action
 from barricade_rl.env import BarricadeEnv
 
 
@@ -93,3 +93,32 @@ def test_invalid_action_raises_by_default():
     env.reset()
     with pytest.raises(ValueError):
         env.step(1)
+
+
+def test_legal_action_mask_is_cached_until_state_changes():
+    game = BarricadeGame()
+    original = game.is_wall_legal
+    calls = {"count": 0}
+
+    def counted(*args, **kwargs):
+        calls["count"] += 1
+        return original(*args, **kwargs)
+
+    game.is_wall_legal = counted
+    first = game.legal_actions_mask()
+    first_calls = calls["count"]
+    second = game.legal_actions_mask()
+    assert np.array_equal(first, second)
+    assert calls["count"] == first_calls
+
+    game.state.pawns[0] = (7, 4)
+    game.legal_actions_mask()
+    assert calls["count"] > first_calls
+
+
+def test_player_one_canonical_actions_rotate_to_absolute_board():
+    assert canonical_action_to_absolute(0, player=1) == 1
+    assert canonical_action_to_absolute(1, player=1) == 0
+    assert canonical_action_to_absolute(2, player=1) == 3
+    assert canonical_action_to_absolute(3, player=1) == 2
+    assert canonical_action_to_absolute(wall_action("h", 0, 1), player=1) == wall_action("h", 7, 6)

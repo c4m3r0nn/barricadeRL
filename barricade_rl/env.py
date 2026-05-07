@@ -4,7 +4,7 @@ import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from barricade_rl.core import ACTION_COUNT, BOARD_SIZE, BarricadeGame
+from barricade_rl.core import ACTION_COUNT, BOARD_SIZE, BarricadeGame, canonical_action_to_absolute
 
 
 class BarricadeEnv(gym.Env):
@@ -26,7 +26,7 @@ class BarricadeEnv(gym.Env):
 
     def step(self, action: int):
         actor = self.game.state.current_player
-        legal = self.game.apply_action(int(action))
+        legal = self.game.apply_action(canonical_action_to_absolute(int(action), actor))
         if not legal:
             if self.invalid_action == "raise":
                 raise ValueError(f"Illegal action {action}")
@@ -43,7 +43,7 @@ class BarricadeEnv(gym.Env):
         return self.game.observation(canonical=True), reward, terminated, truncated, self._info()
 
     def action_mask(self) -> np.ndarray:
-        return self.game.legal_actions_mask()
+        return self.game.legal_actions_mask(canonical=True)
 
     def action_masks(self) -> np.ndarray:
         return self.action_mask()

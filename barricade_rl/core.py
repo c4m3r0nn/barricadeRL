@@ -52,6 +52,15 @@ def decode_wall_action(action: int) -> tuple[str, int, int]:
     raise ValueError(f"Action {action} is not a wall placement")
 
 
+def canonical_action_to_absolute(action: int, player: int) -> int:
+    if player == 0:
+        return action
+    if action in MOVE_ACTIONS:
+        return {0: 1, 1: 0, 2: 3, 3: 2}[action]
+    orientation, row, col = decode_wall_action(action)
+    return wall_action(orientation, WALL_GRID_SIZE - 1 - row, WALL_GRID_SIZE - 1 - col)
+
+
 @dataclass(slots=True)
 class BarricadeState:
     pawns: list[tuple[int, int]] = field(default_factory=lambda: [start_pos(0), start_pos(1)])
@@ -80,9 +89,13 @@ class BarricadeGame:
     def __init__(self, max_moves: int = 500):
         self.max_moves = max_moves
         self.state = BarricadeState()
+        self._legal_actions_cache_key = None
+        self._legal_actions_cache = None
 
     def reset(self) -> BarricadeState:
         self.state = BarricadeState()
+        self._legal_actions_cache_key = None
+        self._legal_actions_cache = None
         return self.state
 
     @property
@@ -182,17 +195,52 @@ class BarricadeGame:
         finally:
             walls[row, col] = False
 
-    def legal_actions_mask(self) -> np.ndarray:
-        mask = np.zeros(ACTION_COUNT, dtype=bool)
-        for action in MOVE_ACTIONS:
-            mask[action] = self.move_destination(action) is not None
-        for row in range(WALL_GRID_SIZE):
-            for col in range(WALL_GRID_SIZE):
-                if self.is_wall_legal("h", row, col):
-                    mask[wall_action("h", row, col)] = True
-                if self.is_wall_legal("v", row, col):
-                    mask[wall_action("v", row, col)] = True
+    def legal_actions_mask(self, canonical: bool = False) -> np.ndarray:
+        key = self.state_key()
+        if self._legal_actions_cache_key == key and self._legal_actions_cache is not None:
+            mask = self._legal_actions_cache.copy()
+        else:
+            mask = np.zeros(ACTION_COUNT, dtype=bool)
+            for action in MOVE_ACTIONS:
+                mask[action] = self.move_destination(action) is not None
+            for row in range(WALL_GRID_SIZE):
+                for col in range(WALL_GRID_SIZE):
+                    if self.is_wall_legal("h", row, col):
+                        mask[wall_action("h", row, col)] = True
+                    if self.is_wall_legal("v", row, col):
+                        mask[wall_action("v", row, col)] = True
+            self._legal_actions_cache_key = key
+            self._legal_actions_cache = mask.copy()
+        if canonical:
+            return self.to_canonical_action_mask(mask, self.state.current_player)
         return mask
+
+    def to_canonical_action_mask(self, absolute_mask: np.ndarray, player: int) -> np.ndarray:
+        if player == 0:
+            return absolute_mask.copy()
+        canonical_mask = np.zeros_like(absolute_mask)
+        for absolute_action in np.flatnonzero(absolute_mask):
+            canonical_mask[canonical_action_to_absolute(int(absolute_action), player)] = True
+        return canonical_mask
+
+    def state_key(self):
+        return (
+            tuple(self.state.pawns),
+            self.state.h_walls.tobytes(),
+            self.state.v_walls.tobytes(),
+            tuple(self.state.walls_remaining),
+            self.state.current_player,
+            self.state.winner,
+            self.state.move_count,
+        )
+
+    def cached_action_is_legal(self, action: int) -> bool | None:
+        key = self.state_key()
+        if self._legal_actions_cache_key == key and self._legal_actions_cache is not None:
+            if 0 <= action < ACTION_COUNT:
+                return bool(self._legal_actions_cache[action])
+            return False
+        return None
 
     def apply_action(self, action: int) -> bool:
         if self.terminated:
@@ -207,7 +255,10 @@ class BarricadeGame:
                 self.state.winner = player
         elif 4 <= action < ACTION_COUNT:
             orientation, row, col = decode_wall_action(action)
-            if not self.is_wall_legal(orientation, row, col, player):
+            cached_legal = self.cached_action_is_legal(action)
+            if cached_legal is False:
+                return False
+            if cached_legal is None and not self.is_wall_legal(orientation, row, col, player):
                 return False
             walls = self.state.h_walls if orientation == "h" else self.state.v_walls
             walls[row, col] = True

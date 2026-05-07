@@ -51,6 +51,7 @@ The environment keeps rendering and UI out of the training loop. The core state 
 ```bash
 .venv/bin/barricade-benchmark --episodes 100 --opponent random
 .venv/bin/barricade-evaluate --episodes 100 --policy greedy --opponent random
+.venv/bin/barricade-evaluate --episodes 100 --policy greedy --opponent mixed
 ```
 
 ## MaskablePPO Smoke Training
@@ -65,6 +66,28 @@ Then run:
 
 ```bash
 .venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent random
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent mixed --out runs/maskable_ppo_mixed
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent mixed --shaped-reward
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --checkpoint-opponents "runs/maskable_ppo_barricade/best/*.zip" --out runs/maskable_ppo_pool
+```
+
+Summarize milestone replays:
+
+```bash
+.venv/bin/barricade-replay-summary runs/maskable_ppo_barricade/replays/replay_*.json
+```
+
+Run and monitor experiments:
+
+```bash
+.venv/bin/barricade-experiments --root runs/experiments --timesteps 10000 --seed 0
+.venv/bin/barricade-experiment-ui
+```
+
+Record a replay from a trained model:
+
+```bash
+.venv/bin/barricade-record-model-game --model runs/maskable_ppo_barricade/best/best_model.zip --out runs/manual_replay.json
 ```
 
 Watch metrics during or after training:

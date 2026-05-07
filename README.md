@@ -12,6 +12,8 @@ The project currently includes:
 - Random and greedy scripted opponents.
 - A single-agent training wrapper where the learner plays player 0.
 - Benchmark, evaluation, and MaskablePPO smoke-training commands.
+- Replay summary tooling, checkpoint opponent pools, optional shaped rewards, and an AEC-style PettingZoo wrapper.
+- Experiment runner and Tkinter experiment dashboard for launching runs and viewing live metrics.
 - Pytest coverage for important movement, wall, jump, opponent, and win rules.
 
 ## Project Layout
@@ -24,6 +26,10 @@ barricade_rl/
   opponents.py # Random and greedy scripted opponents
   benchmark.py # Environment speed benchmark command
   evaluate.py  # Scripted policy evaluation command
+  replay.py    # Replay recording and summary command
+  experiments.py # Experiment specs, runner, JSONL metrics helpers
+  experiment_ui.py # Local Tkinter training dashboard
+  pettingzoo_env.py # AEC-style two-agent wrapper
   train_maskable_ppo.py # MaskablePPO smoke-training command
   ui_tk.py     # Human-playable Tkinter UI
 documentation/
@@ -178,6 +184,12 @@ Evaluate a scripted policy:
 .\.venv\Scripts\barricade-evaluate.exe --episodes 100 --policy greedy --opponent random
 ```
 
+Evaluate a trained model:
+
+```powershell
+.\.venv\Scripts\barricade-evaluate-model.exe --model runs\maskable_ppo_barricade\best\best_model.zip --episodes 100 --opponent random
+```
+
 Run all tests again:
 
 ```powershell
@@ -194,7 +206,7 @@ The basic environment only needs:
 - `numpy`
 - `pytest` for tests
 
-Training dependencies such as PyTorch, Stable-Baselines3, and `sb3-contrib` are optional for now.
+Training dependencies such as PyTorch, Stable-Baselines3, and `sb3-contrib` are optional for now. PettingZoo is optional unless you are using the AEC self-play wrapper.
 
 ## Setup
 
@@ -349,6 +361,16 @@ Available policies and opponents:
 
 - `random`
 - `greedy`
+- `mixed` for opponents, which samples between random and greedy play
+
+Evaluate a trained MaskablePPO checkpoint:
+
+```bash
+.venv/bin/barricade-evaluate-model --model runs/maskable_ppo_barricade/best/best_model.zip --episodes 100 --opponent random
+```
+
+This reports wins, losses, truncations, win rate, and average learner steps.
+It also reports loss rate, truncation rate, min/max learner steps, and average walls placed by each side. Watch wall usage closely: if the learner always burns all walls, reward shaping or opponent curriculum may need adjustment.
 
 ## Optional RL Dependencies
 
@@ -374,6 +396,31 @@ After installing RL dependencies, run a short smoke-training job:
 Outputs are written under `runs/maskable_ppo_barricade/` by default.
 
 The smoke trainer currently uses `MlpPolicy`, which flattens the small `(6, 9, 9)` observation. A custom small CNN can be added later once the training loop and evaluation workflow are stable.
+
+Train against a stronger mixed opponent:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent mixed --out runs/maskable_ppo_mixed
+```
+
+`mixed` samples between random and greedy opponent moves. It is slower than `random`, but it is a better first curriculum step because the learner sees less brittle play.
+
+Train against a checkpoint opponent pool:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 10000 \
+  --checkpoint-opponents "runs/maskable_ppo_barricade/best/*.zip" \
+  --out runs/maskable_ppo_pool
+```
+
+Add optional shortest-path shaped rewards:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent mixed --shaped-reward
+```
+
+Sparse win/loss reward remains the default. Use shaped rewards as an experiment, not as the baseline.
 
 ## Visualize Training Progress
 
@@ -419,6 +466,83 @@ Control replay frequency with:
 
 Use `--replay-freq 0` to disable replay saving.
 
+Summarize saved replays side by side:
+
+```bash
+.venv/bin/barricade-replay-summary runs/maskable_ppo_barricade/replays/replay_*.json
+```
+
+## Experiment Runner And Dashboard
+
+Run the default experiment set from the command line:
+
+```bash
+.venv/bin/barricade-experiments --root runs/experiments --timesteps 10000 --seed 0
+```
+
+Open the local experiment dashboard:
+
+```bash
+.venv/bin/barricade-experiment-ui
+```
+
+The dashboard can:
+
+- launch one experiment at a time
+- stop the active process
+- choose opponent, timesteps, seed, replay frequency, shaped reward, and checkpoint glob
+- graph live `metrics.jsonl` values such as reward, episode length, FPS, and train losses when available
+- open the latest replay for a selected run
+- record a replay from a completed `final_model.zip`
+
+Each UI run is written under:
+
+```text
+runs/ui_experiments/<experiment-name>/
+```
+
+Important files:
+
+```text
+metrics.jsonl
+experiment.json
+final_model.zip
+best/best_model.zip
+replays/*.json
+```
+
+Record a replay from any checkpoint manually:
+
+```bash
+.venv/bin/barricade-record-model-game \
+  --model runs/maskable_ppo_barricade/best/best_model.zip \
+  --out runs/manual_replay.json \
+  --opponent random
+```
+
+## PettingZoo Wrapper
+
+Install the optional multi-agent dependency:
+
+```bash
+.venv/bin/python -m pip install -e '.[multiagent]'
+```
+
+Then use the AEC-style wrapper:
+
+```python
+from barricade_rl import BarricadeAECEnv
+
+env = BarricadeAECEnv()
+env.reset(seed=0)
+agent = env.agent_selection
+obs = env.observe(agent)
+action = obs["action_mask"].nonzero()[0][0]
+env.step(int(action))
+```
+
+This wrapper is for the next self-play phase. The single-agent SB3 path remains the fastest route for laptop experiments.
+
 ## Current Status
 
 Implemented:
@@ -436,17 +560,14 @@ Implemented:
 - Scripted opponents.
 - Training script.
 - Evaluation script.
-
-Not implemented yet:
-
 - PettingZoo self-play wrapper.
 - Checkpointing and opponent pools.
+- Optional shaped rewards.
 
 ## Suggested Next Steps
 
-1. Install RL dependencies and run a short MaskablePPO smoke train.
-2. Benchmark CPU speed before optimizing rule checks.
-3. Add a saved-model evaluation command for trained MaskablePPO checkpoints.
-4. Add more rule tests from played UI edge cases.
-5. Add a PettingZoo AEC wrapper once the single-agent training loop is stable.
-6. Add checkpoint self-play and opponent pools.
+1. Run longer baseline experiments: random, mixed, shaped mixed, checkpoint pool.
+2. Compare checkpoints with model evaluation plus replay summaries.
+3. Add a richer opponent-pool scheduler instead of uniform random checkpoint sampling.
+4. Move from the AEC wrapper scaffold to full PettingZoo self-play training.
+5. Optimize BFS/path checks further if long runs are still CPU-bound.

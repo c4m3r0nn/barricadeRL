@@ -21,12 +21,21 @@ rl = [
   "sb3-contrib",
   "tensorboard",
 ]
+multiagent = ["pettingzoo>=1.24"]
 
 [project.scripts]
 barricade-play = "barricade_rl.ui_tk:main"
 barricade-benchmark = "barricade_rl.benchmark:main"
 barricade-evaluate = "barricade_rl.evaluate:main"
+barricade-evaluate-model = "barricade_rl.evaluate:model_main"
+barricade-experiments = "barricade_rl.experiments:main"
+barricade-experiment-ui = "barricade_rl.experiment_ui:main"
+barricade-record-model-game = "barricade_rl.replay:record_model_main"
+barricade-replay-summary = "barricade_rl.replay:main"
 barricade-train-maskable-ppo = "barricade_rl.train_maskable_ppo:main"
+
+[tool.setuptools.packages.find]
+include = ["barricade_rl*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
