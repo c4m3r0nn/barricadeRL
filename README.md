@@ -514,8 +514,12 @@ The dashboard can:
 
 - launch one experiment at a time
 - stop the active process
-- choose opponent, timesteps, seed, replay frequency, shaped reward, and checkpoint glob
-- graph live `metrics.jsonl` values such as reward, episode length, FPS, and train losses when available
+- choose from the main experiment presets: `random`, `mixed`, `mixed + shaped reward`, and `checkpoint pool`
+- still edit opponent, timesteps, seed, replay frequency, shaped reward, and checkpoint glob directly
+- graph multiple live `metrics.jsonl` values at once, including reward, episode length, FPS, episodes, and train losses when available
+- change the selected graph metrics while training is running
+- save the current graph as `graphs/metrics.svg` inside the selected run directory
+- open the selected run directory in Finder, Explorer, or the Linux file manager
 - open the latest replay for a selected run
 - record a replay from a completed `final_model.zip`
 
@@ -533,6 +537,7 @@ experiment.json
 final_model.zip
 best/best_model.zip
 replays/*.json
+graphs/metrics.svg
 ```
 
 `metrics.jsonl` is the dashboard's live data source. It is written after rollouts and may include:
@@ -545,6 +550,25 @@ ep_rew_mean
 ep_len_mean
 train_loss
 train_value_loss
+train_entropy_loss
+train_policy_gradient_loss
+```
+
+The dashboard writes `graphs/metrics.svg` automatically whenever it has enough data to draw the selected metrics. When several metrics are selected, each line is scaled independently. That means reward, FPS, and loss can be viewed together even though they use very different numeric ranges.
+
+For initial testing, use short runs that prove the pipeline works before spending time on longer comparisons:
+
+```text
+random: 25,000 timesteps
+mixed: 25,000 timesteps
+mixed + shaped reward: 25,000 timesteps
+checkpoint pool: 25,000 timesteps after at least one earlier run has produced a checkpoint
+```
+
+These are smoke-test lengths. They are enough to check that metrics, replays, checkpoints, and the UI are behaving, but not enough to judge the best training strategy. For the first meaningful comparison, rerun the same four presets at around `100,000` timesteps each. Use the checkpoint pool after you have a usable checkpoint glob, for example:
+
+```text
+runs/ui_experiments/*/best/*.zip
 ```
 
 Record a replay from any checkpoint manually:

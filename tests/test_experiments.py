@@ -1,7 +1,16 @@
 from pathlib import Path
 
 from barricade_rl.evaluate import EvaluationResult
-from barricade_rl.experiments import ExperimentSpec, build_report, build_train_command, read_jsonl, write_jsonl
+from barricade_rl.experiments import (
+    ExperimentSpec,
+    available_replays,
+    build_report,
+    build_train_command,
+    experiment_presets,
+    read_jsonl,
+    save_graph_svg,
+    write_jsonl,
+)
 
 
 def test_build_train_command_includes_core_options(tmp_path: Path):
@@ -54,3 +63,46 @@ def test_build_report_contains_config_metrics_and_eval(tmp_path: Path):
     assert report["latest_metrics"]["ep_rew_mean"] == 0.25
     assert report["evaluation"]["win_rate"] == 0.5
     assert report["evaluation"]["avg_walls_placed"] == 5.0
+
+
+def test_experiment_presets_include_named_training_modes():
+    presets = experiment_presets(timesteps=25_000, seed=10, checkpoint_glob="runs/base/*.zip")
+
+    assert list(presets) == ["random", "mixed", "mixed + shaped reward", "checkpoint pool"]
+    assert presets["random"].opponent == "random"
+    assert presets["mixed"].opponent == "mixed"
+    assert presets["mixed + shaped reward"].shaped_reward is True
+    assert presets["checkpoint pool"].checkpoint_opponents == ["runs/base/*.zip"]
+    assert presets["checkpoint pool"].seed == 13
+
+
+def test_save_graph_svg_writes_selected_metrics(tmp_path: Path):
+    rows = [
+        {"timesteps": 1, "ep_rew_mean": -1.0, "train_loss": 0.7},
+        {"timesteps": 2, "ep_rew_mean": 0.0, "train_loss": 0.4},
+        {"timesteps": 3, "ep_rew_mean": 1.0, "train_loss": 0.2},
+    ]
+
+    graph_path = save_graph_svg(tmp_path, rows, ["ep_rew_mean", "train_loss"])
+
+    assert graph_path == tmp_path / "graphs" / "metrics.svg"
+    content = graph_path.read_text(encoding="utf-8")
+    assert "<svg" in content
+    assert "ep_rew_mean" in content
+    assert "train_loss" in content
+
+
+def test_available_replays_sorts_milestones_numerically(tmp_path: Path):
+    replay_dir = tmp_path / "replays"
+    replay_dir.mkdir()
+    for name in ["replay_5000.json", "replay_10000.json", "manual_replay.json", "replay_25000.json"]:
+        (replay_dir / name).write_text("{}", encoding="utf-8")
+
+    replays = available_replays(tmp_path)
+
+    assert [path.name for path in replays] == [
+        "replay_5000.json",
+        "replay_10000.json",
+        "replay_25000.json",
+        "manual_replay.json",
+    ]

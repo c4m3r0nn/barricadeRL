@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 from pathlib import Path
 
 from barricade_rl.core import (
@@ -37,6 +37,9 @@ class BarricadeUI:
         self.root.title("Barricade RL Test UI")
         width = MARGIN * 2 + CELL * BOARD_SIZE + SIDE_PANEL_WIDTH
         height = MARGIN * 2 + CELL * BOARD_SIZE
+        toolbar = tk.Frame(self.root)
+        toolbar.pack(fill="x")
+        tk.Button(toolbar, text="Open Replay File", command=self.open_replay_dialog).pack(side="left", padx=6, pady=4)
         self.canvas = tk.Canvas(self.root, width=width, height=height, bg="#f7f4ed", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<ButtonPress-1>", self.on_button_press)
@@ -44,14 +47,38 @@ class BarricadeUI:
         self.canvas.bind("<ButtonRelease-1>", self.on_button_release)
         self.root.bind("<Key>", self.on_key)
         if replay_path is not None:
-            replay = load_replay(replay_path)
-            self.replay_frames = replay["frames"]
-            if self.replay_frames:
-                apply_frame(self.game, self.replay_frames[0])
+            self.load_replay_path(replay_path)
         self.draw()
 
     def run(self):
         self.root.mainloop()
+
+    def load_replay_path(self, replay_path: Path):
+        replay = load_replay(replay_path)
+        frames = replay.get("frames", [])
+        if not frames:
+            raise ValueError(f"{replay_path} does not contain any replay frames")
+        self.replay_path = replay_path
+        self.replay_frames = frames
+        self.replay_index = 0
+        self.replay_playing = False
+        apply_frame(self.game, self.replay_frames[0])
+
+    def open_replay_dialog(self):
+        initial_dir = self.replay_path.parent if self.replay_path else Path("runs")
+        path = filedialog.askopenfilename(
+            title="Open Barricade replay",
+            initialdir=str(initial_dir),
+            filetypes=[("Replay JSON", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            self.load_replay_path(Path(path))
+        except (OSError, ValueError, KeyError) as exc:
+            messagebox.showerror("Could not open replay", str(exc))
+            return
+        self.draw()
 
     def on_key(self, event):
         if self.replay_frames:
@@ -65,6 +92,8 @@ class BarricadeUI:
                     self.play_next_replay_frame()
             elif event.char.lower() == "r":
                 self.set_replay_index(0)
+            elif event.char.lower() == "o":
+                self.open_replay_dialog()
             return
 
         keymap = {"Up": 0, "Down": 1, "Left": 2, "Right": 3, "w": 0, "s": 1, "a": 2, "d": 3}
@@ -284,6 +313,7 @@ class BarricadeUI:
         self.canvas.create_text(x, y + 268, text="Left/P: previous", anchor="nw", fill="#454545", font=("Helvetica", 12))
         self.canvas.create_text(x, y + 292, text="Space: play/pause", anchor="nw", fill="#454545", font=("Helvetica", 12))
         self.canvas.create_text(x, y + 316, text="R: restart replay", anchor="nw", fill="#454545", font=("Helvetica", 12))
+        self.canvas.create_text(x, y + 340, text="O: open replay file", anchor="nw", fill="#454545", font=("Helvetica", 12))
 
     def draw_drag_preview(self):
         if self.drag_wall_orientation is None or self.drag_xy is None:
