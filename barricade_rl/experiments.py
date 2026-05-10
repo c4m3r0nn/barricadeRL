@@ -21,10 +21,18 @@ class ExperimentSpec:
     shaped_reward: bool = False
     checkpoint_opponents: list[str] = field(default_factory=list)
     replay_freq: int = 1_000
+    policy: str = "mlp"
+    self_play: bool = False
+    self_play_save_freq: int = 10_000
+    randomize_learner_side: bool = False
+    checkpoint_probability: float = 0.60
+    eval_opponents: list[str] = field(default_factory=lambda: ["random", "greedy", "mixed", "anti_rush"])
+    eval_episodes: int = 10
+    scripted_eval_freq: int | None = None
 
 
 GRAPH_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#17becf", "#8c564b"]
-REPLAY_NAME_PATTERN = re.compile(r"^replay_(\d+)\.json$")
+REPLAY_NAME_PATTERN = re.compile(r"^replay_(\d+)(?:_p[01])?\.json$")
 
 
 def experiment_dir(root: Path, spec: ExperimentSpec) -> Path:
@@ -47,12 +55,29 @@ def build_train_command(spec: ExperimentSpec, root: Path) -> list[str]:
         str(out_dir),
         "--replay-freq",
         str(spec.replay_freq),
+        "--policy",
+        spec.policy,
     ]
     if spec.shaped_reward:
         command.append("--shaped-reward")
     if spec.checkpoint_opponents:
         command.append("--checkpoint-opponents")
         command.extend(spec.checkpoint_opponents)
+    if spec.self_play:
+        command.append("--self-play")
+        command.extend(["--self-play-save-freq", str(spec.self_play_save_freq)])
+    if spec.randomize_learner_side:
+        command.append("--randomize-learner-side")
+    if spec.self_play:
+        command.extend(["--checkpoint-probability", str(spec.checkpoint_probability)])
+    if spec.eval_opponents:
+        command.append("--eval-opponents")
+        command.extend(spec.eval_opponents)
+    else:
+        command.append("--eval-opponents")
+    command.extend(["--eval-episodes", str(spec.eval_episodes)])
+    if spec.scripted_eval_freq is not None:
+        command.extend(["--scripted-eval-freq", str(spec.scripted_eval_freq)])
     return command
 
 
@@ -77,6 +102,18 @@ def experiment_presets(
             opponent="mixed",
             seed=seed + 3,
             checkpoint_opponents=[checkpoint_glob],
+        ),
+        "cnn self-play": ExperimentSpec(
+            name="cnn_self_play",
+            timesteps=timesteps,
+            opponent="curriculum",
+            seed=seed + 4,
+            checkpoint_opponents=[checkpoint_glob],
+            policy="cnn",
+            self_play=True,
+            self_play_save_freq=10_000,
+            randomize_learner_side=True,
+            checkpoint_probability=0.60,
         ),
     }
 

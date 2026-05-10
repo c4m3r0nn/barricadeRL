@@ -53,6 +53,13 @@ def test_record_model_game_returns_replay_frames():
     assert "learner_action" in frames[1]
 
 
+def test_record_model_game_can_record_player_one_learner():
+    frames = record_model_game(FirstLegalModel(), opponent_name="random", seed=0, max_steps=2, learner_side=1)
+
+    assert frames[0]["learner_side"] == 1
+    assert frames[0]["current_player"] == 1
+
+
 def test_replay_summary_reports_game_outcome():
     game = BarricadeGame()
     frames = [state_to_frame(game, label="start")]

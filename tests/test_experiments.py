@@ -21,6 +21,14 @@ def test_build_train_command_includes_core_options(tmp_path: Path):
         seed=7,
         shaped_reward=True,
         checkpoint_opponents=["runs/base/best/*.zip"],
+        policy="cnn",
+        self_play=True,
+        self_play_save_freq=2048,
+        randomize_learner_side=True,
+        checkpoint_probability=0.55,
+        eval_opponents=["random", "mixed"],
+        eval_episodes=12,
+        scripted_eval_freq=4096,
     )
 
     command = build_train_command(spec, tmp_path)
@@ -32,6 +40,20 @@ def test_build_train_command_includes_core_options(tmp_path: Path):
     assert "--shaped-reward" in command
     assert "--checkpoint-opponents" in command
     assert "runs/base/best/*.zip" in command
+    assert "--policy" in command
+    assert "cnn" in command
+    assert "--self-play" in command
+    assert "--self-play-save-freq" in command
+    assert "2048" in command
+    assert "--randomize-learner-side" in command
+    assert "--checkpoint-probability" in command
+    assert "0.55" in command
+    assert "--eval-opponents" in command
+    assert "random" in command
+    assert "--eval-episodes" in command
+    assert "12" in command
+    assert "--scripted-eval-freq" in command
+    assert "4096" in command
 
 
 def test_jsonl_round_trip(tmp_path: Path):
@@ -68,12 +90,17 @@ def test_build_report_contains_config_metrics_and_eval(tmp_path: Path):
 def test_experiment_presets_include_named_training_modes():
     presets = experiment_presets(timesteps=25_000, seed=10, checkpoint_glob="runs/base/*.zip")
 
-    assert list(presets) == ["random", "mixed", "mixed + shaped reward", "checkpoint pool"]
+    assert list(presets) == ["random", "mixed", "mixed + shaped reward", "checkpoint pool", "cnn self-play"]
     assert presets["random"].opponent == "random"
     assert presets["mixed"].opponent == "mixed"
     assert presets["mixed + shaped reward"].shaped_reward is True
     assert presets["checkpoint pool"].checkpoint_opponents == ["runs/base/*.zip"]
     assert presets["checkpoint pool"].seed == 13
+    assert presets["cnn self-play"].policy == "cnn"
+    assert presets["cnn self-play"].opponent == "curriculum"
+    assert presets["cnn self-play"].self_play is True
+    assert presets["cnn self-play"].randomize_learner_side is True
+    assert presets["cnn self-play"].checkpoint_probability == 0.60
 
 
 def test_save_graph_svg_writes_selected_metrics(tmp_path: Path):

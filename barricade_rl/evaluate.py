@@ -72,8 +72,15 @@ def select_model_action(model, obs, env: BarricadeSingleAgentEnv, deterministic:
     return int(action)
 
 
-def evaluate_model(model, episodes: int, opponent_name: str, seed: int, deterministic: bool = True) -> EvaluationResult:
-    env = BarricadeSingleAgentEnv(opponent=make_opponent(opponent_name), invalid_action="raise")
+def evaluate_model(
+    model,
+    episodes: int,
+    opponent_name: str,
+    seed: int,
+    deterministic: bool = True,
+    learner_side: int = 0,
+) -> EvaluationResult:
+    env = BarricadeSingleAgentEnv(opponent=make_opponent(opponent_name), invalid_action="raise", learner_side=learner_side)
     wins = 0
     losses = 0
     truncations = 0
@@ -93,13 +100,14 @@ def evaluate_model(model, episodes: int, opponent_name: str, seed: int, determin
             episode_steps += 1
         if truncated:
             truncations += 1
-        elif info["winner"] == 0:
+        elif info["winner"] == info["learner_side"]:
             wins += 1
         else:
             losses += 1
         episode_lengths.append(episode_steps)
-        learner_walls_placed.append(10 - info["walls_remaining"][0])
-        opponent_walls_placed.append(10 - info["walls_remaining"][1])
+        side = info["learner_side"]
+        learner_walls_placed.append(10 - info["walls_remaining"][side])
+        opponent_walls_placed.append(10 - info["walls_remaining"][1 - side])
     return EvaluationResult(
         episodes=episodes,
         wins=wins,
@@ -112,10 +120,12 @@ def evaluate_model(model, episodes: int, opponent_name: str, seed: int, determin
     )
 
 
-def print_result(result: EvaluationResult, policy: str, opponent_name: str):
+def print_result(result: EvaluationResult, policy: str, opponent_name: str, learner_side: int | None = None):
     print(f"episodes={result.episodes}")
     print(f"policy={policy}")
     print(f"opponent={opponent_name}")
+    if learner_side is not None:
+        print(f"learner_side={learner_side}")
     print(f"wins={result.wins}")
     print(f"losses={result.losses}")
     print(f"truncations={result.truncations}")
@@ -176,22 +186,29 @@ def run_evaluation(episodes: int, policy_name: str, opponent_name: str, seed: in
     )
 
 
-def run_model_evaluation(model_path: Path, episodes: int, opponent_name: str, seed: int, deterministic: bool):
+def run_model_evaluation(model_path: Path, episodes: int, opponent_name: str, seed: int, deterministic: bool, learner_side: int):
     try:
         from sb3_contrib import MaskablePPO
     except ImportError as exc:
         raise SystemExit("Install RL dependencies first: .venv/bin/python -m pip install -e '.[dev,rl]'") from exc
 
     model = MaskablePPO.load(model_path)
-    result = evaluate_model(model, episodes=episodes, opponent_name=opponent_name, seed=seed, deterministic=deterministic)
-    print_result(result, policy=str(model_path), opponent_name=opponent_name)
+    result = evaluate_model(
+        model,
+        episodes=episodes,
+        opponent_name=opponent_name,
+        seed=seed,
+        deterministic=deterministic,
+        learner_side=learner_side,
+    )
+    print_result(result, policy=str(model_path), opponent_name=opponent_name, learner_side=learner_side)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a simple Barricade policy against a scripted opponent.")
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--policy", choices=["random", "greedy"], default="greedy")
-    parser.add_argument("--opponent", choices=["random", "greedy", "mixed"], default="random")
+    parser.add_argument("--opponent", choices=["random", "greedy", "mixed", "anti_rush"], default="random")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     run_evaluation(args.episodes, args.policy, args.opponent, args.seed)
@@ -201,8 +218,9 @@ def model_main():
     parser = argparse.ArgumentParser(description="Evaluate a trained MaskablePPO Barricade model.")
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--episodes", type=int, default=100)
-    parser.add_argument("--opponent", choices=["random", "greedy", "mixed"], default="random")
+    parser.add_argument("--opponent", choices=["random", "greedy", "mixed", "anti_rush"], default="random")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--learner-side", type=int, choices=[0, 1], default=0)
     parser.add_argument("--stochastic", action="store_true", help="Use stochastic model actions instead of deterministic actions.")
     args = parser.parse_args()
     run_model_evaluation(
@@ -211,6 +229,7 @@ def model_main():
         opponent_name=args.opponent,
         seed=args.seed,
         deterministic=not args.stochastic,
+        learner_side=args.learner_side,
     )
 
 

@@ -22,14 +22,24 @@ from barricade_rl.experiments import (
 
 
 METRIC_OPTIONS = [
-    "ep_rew_mean",
+    "train_env_ep_rew_mean",
     "ep_len_mean",
+    "eval_random_p0_win_rate",
+    "eval_random_p1_win_rate",
+    "eval_greedy_p0_win_rate",
+    "eval_greedy_p1_win_rate",
+    "eval_mixed_p0_win_rate",
+    "eval_mixed_p1_win_rate",
+    "eval_anti_rush_p0_win_rate",
+    "eval_anti_rush_p1_win_rate",
+    "eval_balanced_win_rate",
     "fps",
     "episodes",
     "train_loss",
     "train_value_loss",
     "train_entropy_loss",
     "train_policy_gradient_loss",
+    "self_play_pool_size",
 ]
 
 DEFAULT_CHECKPOINT_GLOB = "runs/maskable_ppo_barricade/best/*.zip"
@@ -48,9 +58,17 @@ class ExperimentDashboard:
         self.name_var = tk.StringVar(value="random")
         self.timesteps_var = tk.StringVar(value="25000")
         self.opponent_var = tk.StringVar(value="random")
+        self.policy_var = tk.StringVar(value="mlp")
         self.seed_var = tk.StringVar(value="0")
         self.replay_freq_var = tk.StringVar(value="5000")
         self.shaped_var = tk.BooleanVar(value=False)
+        self.self_play_var = tk.BooleanVar(value=False)
+        self.self_play_save_freq_var = tk.StringVar(value="10000")
+        self.randomize_learner_side_var = tk.BooleanVar(value=False)
+        self.checkpoint_probability_var = tk.StringVar(value="0.60")
+        self.eval_opponents_var = tk.StringVar(value="random greedy mixed anti_rush")
+        self.eval_episodes_var = tk.StringVar(value="10")
+        self.scripted_eval_freq_var = tk.StringVar(value="")
         self.checkpoint_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
         self._build()
@@ -60,8 +78,29 @@ class ExperimentDashboard:
         self.root.mainloop()
 
     def _build(self):
-        left = tk.Frame(self.root, padx=10, pady=10)
-        left.pack(side="left", fill="y")
+        left_shell = tk.Frame(self.root)
+        left_shell.pack(side="left", fill="y")
+        left_canvas = tk.Canvas(left_shell, width=250, highlightthickness=0)
+        left_scrollbar = tk.Scrollbar(left_shell, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_scrollbar.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="y", expand=False)
+        left = tk.Frame(left_canvas, padx=10, pady=10)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+
+        def update_left_scroll_region(event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+
+        def fit_left_width(event):
+            left_canvas.itemconfigure(left_window, width=event.width)
+
+        def scroll_left(event):
+            left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        left.bind("<Configure>", update_left_scroll_region)
+        left_canvas.bind("<Configure>", fit_left_width)
+        left_canvas.bind("<Enter>", lambda event: left_canvas.bind_all("<MouseWheel>", scroll_left))
+        left_canvas.bind("<Leave>", lambda event: left_canvas.unbind_all("<MouseWheel>"))
         right = tk.Frame(self.root, padx=10, pady=10)
         right.pack(side="right", fill="both", expand=True)
 
@@ -73,8 +112,17 @@ class ExperimentDashboard:
         self._field(left, "Seed", self.seed_var)
         self._field(left, "Replay freq", self.replay_freq_var)
         tk.Label(left, text="Opponent").pack(anchor="w")
-        tk.OptionMenu(left, self.opponent_var, "random", "greedy", "mixed").pack(fill="x")
+        tk.OptionMenu(left, self.opponent_var, "random", "greedy", "mixed", "anti_rush", "curriculum").pack(fill="x")
+        tk.Label(left, text="Policy").pack(anchor="w", pady=(8, 0))
+        tk.OptionMenu(left, self.policy_var, "mlp", "cnn").pack(fill="x")
         tk.Checkbutton(left, text="Shaped reward", variable=self.shaped_var).pack(anchor="w", pady=(8, 2))
+        tk.Checkbutton(left, text="Self-play pool", variable=self.self_play_var).pack(anchor="w", pady=(8, 2))
+        tk.Checkbutton(left, text="Randomize learner side", variable=self.randomize_learner_side_var).pack(anchor="w", pady=(8, 2))
+        self._field(left, "Self-play save freq", self.self_play_save_freq_var)
+        self._field(left, "Checkpoint sample prob", self.checkpoint_probability_var)
+        self._field(left, "Eval opponents", self.eval_opponents_var)
+        self._field(left, "Eval episodes", self.eval_episodes_var)
+        self._field(left, "Eval freq", self.scripted_eval_freq_var)
         self._field(left, "Checkpoint glob", self.checkpoint_var)
 
         tk.Button(left, text="Start", command=self.start_experiment).pack(fill="x", pady=(12, 2))
@@ -93,7 +141,9 @@ class ExperimentDashboard:
         metrics_frame = tk.LabelFrame(right, text="Metrics")
         metrics_frame.pack(fill="x", pady=(8, 0))
         for index, metric in enumerate(METRIC_OPTIONS):
-            variable = tk.BooleanVar(value=metric in {"ep_rew_mean", "ep_len_mean", "train_loss"})
+            variable = tk.BooleanVar(
+                value=metric in {"train_env_ep_rew_mean", "eval_balanced_win_rate", "eval_mixed_p0_win_rate", "eval_mixed_p1_win_rate"}
+            )
             self.metric_vars[metric] = variable
             tk.Checkbutton(metrics_frame, text=metric, variable=variable, command=self.draw_graph).grid(
                 row=index // 4,
@@ -129,12 +179,22 @@ class ExperimentDashboard:
         self.name_var.set(spec.name)
         self.timesteps_var.set(str(spec.timesteps))
         self.opponent_var.set(spec.opponent)
+        self.policy_var.set(spec.policy)
         self.seed_var.set(str(spec.seed))
         self.shaped_var.set(spec.shaped_reward)
+        self.self_play_var.set(spec.self_play)
+        self.self_play_save_freq_var.set(str(spec.self_play_save_freq))
+        self.randomize_learner_side_var.set(spec.randomize_learner_side)
+        self.checkpoint_probability_var.set(str(spec.checkpoint_probability))
+        self.eval_opponents_var.set(" ".join(spec.eval_opponents))
+        self.eval_episodes_var.set(str(spec.eval_episodes))
+        self.scripted_eval_freq_var.set("" if spec.scripted_eval_freq is None else str(spec.scripted_eval_freq))
         self.checkpoint_var.set(" ".join(spec.checkpoint_opponents))
 
     def spec(self) -> ExperimentSpec:
         checkpoints = [value for value in self.checkpoint_var.get().split() if value]
+        eval_opponents = [value for value in self.eval_opponents_var.get().split() if value]
+        scripted_eval_freq = self.scripted_eval_freq_var.get().strip()
         return ExperimentSpec(
             name=self.name_var.get().strip() or "experiment",
             timesteps=int(self.timesteps_var.get()),
@@ -143,6 +203,14 @@ class ExperimentDashboard:
             shaped_reward=self.shaped_var.get(),
             checkpoint_opponents=checkpoints,
             replay_freq=int(self.replay_freq_var.get()),
+            policy=self.policy_var.get(),
+            self_play=self.self_play_var.get(),
+            self_play_save_freq=int(self.self_play_save_freq_var.get()),
+            randomize_learner_side=self.randomize_learner_side_var.get(),
+            checkpoint_probability=float(self.checkpoint_probability_var.get()),
+            eval_opponents=eval_opponents,
+            eval_episodes=int(self.eval_episodes_var.get()),
+            scripted_eval_freq=int(scripted_eval_freq) if scripted_eval_freq else None,
         )
 
     def start_experiment(self):

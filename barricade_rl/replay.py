@@ -86,10 +86,21 @@ def main():
         print("\t".join(str(summary.get(header)) for header in headers))
 
 
-def record_model_game(model, opponent_name: str = "random", seed: int = 0, max_steps: int = 500) -> list[dict[str, Any]]:
-    env = BarricadeSingleAgentEnv(opponent=make_opponent(opponent_name), invalid_action="raise", max_moves=max_steps * 2)
+def record_model_game(
+    model,
+    opponent_name: str = "random",
+    seed: int = 0,
+    max_steps: int = 500,
+    learner_side: int = 0,
+) -> list[dict[str, Any]]:
+    env = BarricadeSingleAgentEnv(
+        opponent=make_opponent(opponent_name),
+        invalid_action="raise",
+        max_moves=max_steps * 2,
+        learner_side=learner_side,
+    )
     obs, info = env.reset(seed=seed)
-    frames = [state_to_frame(env.game, label="start")]
+    frames = [state_to_frame(env.game, label="start", learner_side=learner_side, opponent_opening_action=info.get("opponent_opening_action"))]
     terminated = False
     truncated = False
     steps = 0
@@ -102,6 +113,7 @@ def record_model_game(model, opponent_name: str = "random", seed: int = 0, max_s
                 env.game,
                 label=f"step-{steps + 1}",
                 learner_action=int(action),
+                learner_side=learner_side,
                 opponent_action=info.get("opponent_action"),
                 reward=float(reward),
                 terminated=terminated,
@@ -112,8 +124,15 @@ def record_model_game(model, opponent_name: str = "random", seed: int = 0, max_s
     return frames
 
 
-def record_model_replay(model, path: Path | str, opponent_name: str = "random", seed: int = 0, max_steps: int = 500) -> None:
-    frames = record_model_game(model, opponent_name=opponent_name, seed=seed, max_steps=max_steps)
+def record_model_replay(
+    model,
+    path: Path | str,
+    opponent_name: str = "random",
+    seed: int = 0,
+    max_steps: int = 500,
+    learner_side: int = 0,
+) -> None:
+    frames = record_model_game(model, opponent_name=opponent_name, seed=seed, max_steps=max_steps, learner_side=learner_side)
     save_replay(
         path,
         frames,
@@ -121,6 +140,7 @@ def record_model_replay(model, path: Path | str, opponent_name: str = "random", 
             "opponent": opponent_name,
             "seed": seed,
             "max_steps": max_steps,
+            "learner_side": learner_side,
         },
     )
 
@@ -132,6 +152,7 @@ def record_model_main():
     parser.add_argument("--opponent", choices=["random", "greedy", "mixed"], default="random")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=500)
+    parser.add_argument("--learner-side", type=int, choices=[0, 1], default=0)
     args = parser.parse_args()
     try:
         from sb3_contrib import MaskablePPO
@@ -143,5 +164,6 @@ def record_model_main():
         opponent_name=args.opponent,
         seed=args.seed,
         max_steps=args.max_steps,
+        learner_side=args.learner_side,
     )
     print(f"Saved replay to {args.out}")

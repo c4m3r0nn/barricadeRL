@@ -419,7 +419,15 @@ After installing RL dependencies, run a short smoke-training job:
 
 Outputs are written under `runs/maskable_ppo_barricade/` by default.
 
-The smoke trainer currently uses `MlpPolicy`, which flattens the small `(6, 9, 9)` observation. A custom small CNN can be added later once the training loop and evaluation workflow are stable.
+The learner is always player `0` in the single-agent training path. Opponent models can still be used to choose player `1` moves, but the model being trained receives player `0` rewards.
+
+The default trainer uses `MlpPolicy`, which flattens the small `(6, 9, 9)` observation. You can now switch to a compact board CNN:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo --timesteps 10000 --opponent mixed --policy cnn
+```
+
+The CNN uses small 3x3 convolutions over the six board planes, then feeds the result into MaskablePPO's policy and value heads. This gives the model a better chance to learn local board patterns such as blocked lanes and wall shapes.
 
 Train against a stronger mixed opponent:
 
@@ -437,6 +445,42 @@ Train against a checkpoint opponent pool:
   --checkpoint-opponents "runs/maskable_ppo_barricade/best/*.zip" \
   --out runs/maskable_ppo_pool
 ```
+
+Run refreshing self-play:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 250000 \
+  --opponent curriculum \
+  --policy cnn \
+  --self-play \
+  --self-play-save-freq 5000 \
+  --randomize-learner-side \
+  --checkpoint-probability 0.60 \
+  --checkpoint-opponents "runs/ui_experiments/*/best/*.zip" \
+  --out runs/cnn_self_play
+```
+
+Self-play saves snapshots under:
+
+```text
+runs/cnn_self_play/self_play_pool/checkpoint_<timesteps>.zip
+```
+
+During training, the opponent samples from the previous snapshots plus any checkpoint glob you supplied. `--checkpoint-probability 0.60` means about 60% of opponent turns come from checkpoints and about 40% still come from the scripted curriculum. This keeps pressure from older model versions without letting self-play completely replace scripted opponents.
+
+The `curriculum` opponent samples several scripted styles:
+
+```text
+random: occasional noisy play
+greedy: direct shortest-path racing
+anti_rush: wall placements that try to lengthen the learner's path
+mixed: the earlier random/greedy blend
+```
+
+The purpose is to punish the brittle "always run forward" strategy while still keeping enough variety that the learner does not overfit to one hand-coded opponent.
+
+Use `--randomize-learner-side` for symmetric training. At the start of each episode the learner is randomly assigned to player `0` or player `1`. If the learner is player `1`, the scripted/checkpoint opponent makes the opening player `0` move first, then the model receives a canonical observation from player `1`'s perspective. Rewards are always from the learner's side.
 
 Add optional shortest-path shaped rewards:
 
@@ -462,11 +506,27 @@ http://localhost:6006
 
 Useful charts:
 
-- `rollout/ep_rew_mean`: average training episode reward.
+- `rollout/ep_rew_mean`: average reward in the current training environment. This answers "is the learner getting reward against the opponent distribution it is training on?"
 - `rollout/ep_len_mean`: average episode length.
-- `eval/mean_reward`: evaluation reward at checkpoints.
+- `eval/mean_reward`: SB3's evaluation reward against the same evaluation environment used by the trainer.
 - `train/entropy_loss`: policy randomness.
 - `train/value_loss`: value function fit.
+
+The project also writes explicit scripted evaluation win rates into `metrics.jsonl`:
+
+```text
+eval_random_p0_win_rate
+eval_random_p1_win_rate
+eval_greedy_p0_win_rate
+eval_greedy_p1_win_rate
+eval_mixed_p0_win_rate
+eval_mixed_p1_win_rate
+eval_anti_rush_p0_win_rate
+eval_anti_rush_p1_win_rate
+eval_balanced_win_rate
+```
+
+The `p0` and `p1` metrics are the clearest "is the learner actually winning from both sides?" metrics. `eval_balanced_win_rate` averages the side-specific win rates across the scripted evaluation opponents. It is a better headline metric than rollout reward when comparing checkpoints.
 
 The trainer also saves replay files at milestones:
 
@@ -474,6 +534,13 @@ The trainer also saves replay files at milestones:
 runs/maskable_ppo_barricade/replays/replay_1000.json
 runs/maskable_ppo_barricade/replays/replay_2000.json
 ...
+```
+
+When `--randomize-learner-side` is enabled, milestone replays are saved for both sides:
+
+```text
+runs/cnn_self_play/replays/replay_5000_p0.json
+runs/cnn_self_play/replays/replay_5000_p1.json
 ```
 
 View one in the UI:
@@ -514,9 +581,9 @@ The dashboard can:
 
 - launch one experiment at a time
 - stop the active process
-- choose from the main experiment presets: `random`, `mixed`, `mixed + shaped reward`, and `checkpoint pool`
-- still edit opponent, timesteps, seed, replay frequency, shaped reward, and checkpoint glob directly
-- graph multiple live `metrics.jsonl` values at once, including reward, episode length, FPS, episodes, and train losses when available
+- choose from the main experiment presets: `random`, `mixed`, `mixed + shaped reward`, `checkpoint pool`, and `cnn self-play`
+- still edit opponent, policy, timesteps, seed, replay frequency, shaped reward, self-play settings, learner-side randomization, scripted evaluation settings, and checkpoint glob directly
+- graph multiple live `metrics.jsonl` values at once, including training reward, scripted win rates, episode length, FPS, episodes, self-play pool size, and train losses when available
 - change the selected graph metrics while training is running
 - save the current graph as `graphs/metrics.svg` inside the selected run directory
 - open the selected run directory in Finder, Explorer, or the Linux file manager
@@ -536,6 +603,7 @@ metrics.jsonl
 experiment.json
 final_model.zip
 best/best_model.zip
+self_play_pool/checkpoint_*.zip
 replays/*.json
 graphs/metrics.svg
 ```
@@ -547,14 +615,25 @@ timesteps
 fps
 episodes
 ep_rew_mean
+train_env_ep_rew_mean
 ep_len_mean
+eval_random_p0_win_rate
+eval_random_p1_win_rate
+eval_greedy_p0_win_rate
+eval_greedy_p1_win_rate
+eval_mixed_p0_win_rate
+eval_mixed_p1_win_rate
+eval_anti_rush_p0_win_rate
+eval_anti_rush_p1_win_rate
+eval_balanced_win_rate
 train_loss
 train_value_loss
 train_entropy_loss
 train_policy_gradient_loss
+self_play_pool_size
 ```
 
-The dashboard writes `graphs/metrics.svg` automatically whenever it has enough data to draw the selected metrics. When several metrics are selected, each line is scaled independently. That means reward, FPS, and loss can be viewed together even though they use very different numeric ranges.
+`train_env_ep_rew_mean` is an alias for the rollout reward so the dashboard label is explicit. Use `eval_balanced_win_rate` plus the `eval_*_p0_win_rate` and `eval_*_p1_win_rate` metrics when comparing what the model does from each side against fixed opponents. The dashboard writes `graphs/metrics.svg` automatically whenever it has enough data to draw the selected metrics. When several metrics are selected, each line is scaled independently. That means reward, FPS, win rate, and loss can be viewed together even though they use very different numeric ranges.
 
 For initial testing, use short runs that prove the pipeline works before spending time on longer comparisons:
 
@@ -563,6 +642,7 @@ random: 25,000 timesteps
 mixed: 25,000 timesteps
 mixed + shaped reward: 25,000 timesteps
 checkpoint pool: 25,000 timesteps after at least one earlier run has produced a checkpoint
+cnn self-play: 50,000 timesteps for a first smoke test, then 250,000+ for useful comparisons
 ```
 
 These are smoke-test lengths. They are enough to check that metrics, replays, checkpoints, and the UI are behaving, but not enough to judge the best training strategy. For the first meaningful comparison, rerun the same four presets at around `100,000` timesteps each. Use the checkpoint pool after you have a usable checkpoint glob, for example:
@@ -577,7 +657,8 @@ Record a replay from any checkpoint manually:
 .venv/bin/barricade-record-model-game \
   --model runs/maskable_ppo_barricade/best/best_model.zip \
   --out runs/manual_replay.json \
-  --opponent random
+  --opponent random \
+  --learner-side 1
 ```
 
 ## PettingZoo Wrapper
@@ -622,6 +703,9 @@ Implemented:
 - Evaluation script.
 - PettingZoo AEC-style wrapper.
 - Checkpointing and opponent pools.
+- Compact CNN policy option.
+- Refreshing self-play checkpoint pool.
+- Curriculum opponent with anti-rush wall pressure.
 - Optional shaped rewards.
 - Experiment runner and local dashboard.
 
@@ -629,6 +713,7 @@ Implemented:
 
 1. Run longer baseline experiments: random, mixed, shaped mixed, checkpoint pool.
 2. Compare checkpoints with model evaluation plus replay summaries.
-3. Add a richer opponent-pool scheduler instead of uniform random checkpoint sampling.
-4. Move from the AEC wrapper scaffold to full PettingZoo self-play training.
-5. Optimize BFS/path checks further if long runs are still CPU-bound.
+3. Compare `mlp` versus `cnn` on the same opponent schedule.
+4. Select and compare checkpoints by `eval_balanced_win_rate`, not only final rollout reward.
+5. Move from the AEC wrapper scaffold to full PettingZoo self-play training.
+6. Optimize BFS/path checks further if long runs are still CPU-bound.
