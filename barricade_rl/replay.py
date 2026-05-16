@@ -149,7 +149,7 @@ def record_model_main():
     parser = argparse.ArgumentParser(description="Record one trained model game as a Barricade replay JSON.")
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--opponent", choices=["random", "greedy", "mixed"], default="random")
+    parser.add_argument("--opponent", choices=["random", "greedy", "mixed", "anti_rush_lite", "anti_rush_medium", "anti_rush"], default="random")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=500)
     parser.add_argument("--learner-side", type=int, choices=[0, 1], default=0)

@@ -386,6 +386,8 @@ Available policies and opponents:
 - `random`
 - `greedy`
 - `mixed` for opponents, which samples between random and greedy play
+- `anti_rush_lite` for a softer walling opponent
+- `anti_rush` for a stronger walling opponent
 
 Evaluate a trained MaskablePPO checkpoint:
 
@@ -419,7 +421,7 @@ After installing RL dependencies, run a short smoke-training job:
 
 Outputs are written under `runs/maskable_ppo_barricade/` by default.
 
-The learner is always player `0` in the single-agent training path. Opponent models can still be used to choose player `1` moves, but the model being trained receives player `0` rewards.
+By default, the learner is player `0` in the single-agent training path. Use `--randomize-learner-side` to train from both sides. Rewards are always learner-relative, so a learner win is `+1` whether the model is playing as player `0` or player `1`.
 
 The default trainer uses `MlpPolicy`, which flattens the small `(6, 9, 9)` observation. You can now switch to a compact board CNN:
 
@@ -446,17 +448,127 @@ Train against a checkpoint opponent pool:
   --out runs/maskable_ppo_pool
 ```
 
-Run refreshing self-play:
+Run foundation CNN training before self-play:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 50000 \
+  --opponent curriculum \
+  --policy cnn \
+  --randomize-learner-side \
+  --wall-penalty 0.05 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.03 \
+  --out runs/cnn_foundation
+```
+
+The foundation stage is deliberately not self-play. Its job is to teach basic racing behavior: move toward the goal, avoid wasting walls, and beat random/greedy opponents from both sides. Move to self-play only after `eval_greedy_p0_win_rate` and `eval_greedy_p1_win_rate` are consistently useful.
+
+Run the light anti-rush stage after the foundation stage is working:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 50000 \
+  --opponent curriculum_stage2 \
+  --policy cnn \
+  --initial-model runs/ui_experiments/cnn_foundation/final_model.zip \
+  --randomize-learner-side \
+  --wall-penalty 0.03 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.02 \
+  --out runs/cnn_anti_rush_lite
+```
+
+This stage continues from the foundation model and introduces `anti_rush_lite`, a softer walling opponent. Its job is to teach basic defensive-wall timing without immediately jumping to the full anti-rush opponent. Watch `eval_anti_rush_lite_p0_win_rate` and `eval_anti_rush_lite_p1_win_rate`, but also make sure `eval_greedy_*` does not collapse.
+
+Run the bridge anti-rush stage after the lite stage is still strong against greedy:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 50000 \
+  --opponent curriculum_stage3_bridge \
+  --policy cnn \
+  --initial-model runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip \
+  --randomize-learner-side \
+  --wall-penalty 0.03 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.02 \
+  --out runs/cnn_anti_rush_bridge
+```
+
+This stage uses `anti_rush_medium`: the same trigger distance and self-cost allowance as full anti-rush, but with a lower wall frequency. It is a targeted bridge between `anti_rush_lite` and full `anti_rush`. It uses the best lite checkpoint because the final lite checkpoint overtrained against the lite curriculum.
+
+Run the shaped anti-rush bridge when sparse win/loss reward is not moving full anti-rush above zero:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 50000 \
+  --opponent curriculum_stage3_bridge \
+  --policy cnn \
+  --initial-model runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip \
+  --randomize-learner-side \
+  --wall-penalty 0.03 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.02 \
+  --survival-reward 0.004 \
+  --opponent-wall-value-penalty-scale 0.04 \
+  --out runs/cnn_anti_rush_shaped
+```
+
+This adds two anti-rush-specific hints. `--survival-reward` gives a tiny reward for surviving the opponent turn. `--opponent-wall-value-penalty-scale` subtracts reward when an opponent wall increases the learner's shortest path. In plain terms, it rewards lasting longer while teaching the model that a good response makes the opponent's wall less valuable.
+
+Run the endgame anti-rush curriculum when the model still cannot learn from normal opening positions:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 50000 \
+  --opponent curriculum_stage3_bridge \
+  --policy cnn \
+  --initial-model runs/ui_experiments/cnn_anti_rush_shaped/best/best_model.zip \
+  --randomize-learner-side \
+  --wall-penalty 0.03 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.02 \
+  --survival-reward 0.004 \
+  --opponent-wall-value-penalty-scale 0.04 \
+  --endgame-start-probability 0.30 \
+  --out runs/cnn_anti_rush_endgame
+```
+
+`--endgame-start-probability 0.30` means about 30% of training episodes start with the learner already 2-4 moves from goal. This is backward curriculum: instead of asking the model to discover rare anti-rush situations from the opening, it practices the failing phase directly.
+
+The older `cnn anti-rush gentle` preset is still available for comparison, but the bridge preset is the recommended next run because the gentle stage did not move full anti-rush above 0%.
+
+Run the harder full anti-rush stage only after the bridge stage improves full anti-rush results:
+
+```bash
+.venv/bin/barricade-train-maskable-ppo \
+  --timesteps 50000 \
+  --opponent curriculum_stage3 \
+  --policy cnn \
+  --initial-model runs/ui_experiments/cnn_anti_rush_bridge/best/best_model.zip \
+  --randomize-learner-side \
+  --wall-penalty 0.03 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.02 \
+  --out runs/cnn_anti_rush
+```
+
+Run refreshing self-play after the stronger anti-rush stage is working:
 
 ```bash
 .venv/bin/barricade-train-maskable-ppo \
   --timesteps 250000 \
-  --opponent curriculum \
+  --opponent curriculum_stage3 \
   --policy cnn \
+  --initial-model runs/ui_experiments/cnn_anti_rush/final_model.zip \
   --self-play \
   --self-play-save-freq 5000 \
   --randomize-learner-side \
-  --checkpoint-probability 0.60 \
+  --checkpoint-probability 0.35 \
+  --wall-penalty 0.03 \
+  --reverse-move-penalty 0.02 \
+  --progress-reward-scale 0.03 \
   --checkpoint-opponents "runs/ui_experiments/*/best/*.zip" \
   --out runs/cnn_self_play
 ```
@@ -467,7 +579,7 @@ Self-play saves snapshots under:
 runs/cnn_self_play/self_play_pool/checkpoint_<timesteps>.zip
 ```
 
-During training, the opponent samples from the previous snapshots plus any checkpoint glob you supplied. `--checkpoint-probability 0.60` means about 60% of opponent turns come from checkpoints and about 40% still come from the scripted curriculum. This keeps pressure from older model versions without letting self-play completely replace scripted opponents.
+During self-play, the opponent samples from the previous snapshots plus any checkpoint glob you supplied. `--checkpoint-probability 0.35` means about 35% of opponent turns come from checkpoints and about 65% still come from the scripted curriculum. This is intentionally gentle early on: the model still sees older versions of itself, but it is not crushed by checkpoint opponents before it has learned basic winning play.
 
 The `curriculum` opponent samples several scripted styles:
 
@@ -475,10 +587,48 @@ The `curriculum` opponent samples several scripted styles:
 random: occasional noisy play
 greedy: direct shortest-path racing
 anti_rush: wall placements that try to lengthen the learner's path
+anti_rush_lite: a softer anti-rush version used as the bridge into full anti-rush
+anti_rush_medium: a harder bridge that uses full anti-rush timing but walls less often
 mixed: the earlier random/greedy blend
 ```
 
-The purpose is to punish the brittle "always run forward" strategy while still keeping enough variety that the learner does not overfit to one hand-coded opponent.
+The default curriculum is now a foundation curriculum: mostly greedy play, some random play, a small amount of mixed play, and no anti-rush pressure by default. Anti-rush still exists for evaluation and later experiments, but the base curriculum focuses on learning the race before learning heavy wall defense.
+
+`curriculum_stage2` is the light anti-rush curriculum. It keeps greedy play as the majority opponent but adds `anti_rush_lite` exposure:
+
+```text
+random: 15%
+greedy: 60%
+anti_rush_lite: 15%
+mixed: 10%
+```
+
+`curriculum_stage3_bridge` is the targeted bridge from lite anti-rush to full anti-rush:
+
+```text
+random: 12%
+greedy: 58%
+anti_rush_medium: 20%
+mixed: 10%
+```
+
+`curriculum_stage3_gentle` is the safer bridge from lite anti-rush to full anti-rush:
+
+```text
+random: 15%
+greedy: 67%
+anti_rush: 8%
+mixed: 10%
+```
+
+`curriculum_stage3` increases the full anti-rush share:
+
+```text
+random: 10%
+greedy: 55%
+anti_rush: 20%
+mixed: 15%
+```
 
 Use `--randomize-learner-side` for symmetric training. At the start of each episode the learner is randomly assigned to player `0` or player `1`. If the learner is player `1`, the scripted/checkpoint opponent makes the opening player `0` move first, then the model receives a canonical observation from player `1`'s perspective. Rewards are always from the learner's side.
 
@@ -489,6 +639,16 @@ Add optional shortest-path shaped rewards:
 ```
 
 Sparse win/loss reward remains the default. Use shaped rewards as an experiment, not as the baseline.
+
+Three extra reward controls are useful for CNN curriculum training:
+
+```bash
+--wall-penalty 0.05
+--reverse-move-penalty 0.02
+--progress-reward-scale 0.03
+```
+
+`--wall-penalty` subtracts a tiny reward when the learner places a wall. It does not make walls illegal; it just tells the model that a wall should have a purpose. `--reverse-move-penalty` subtracts a tiny reward when the learner immediately undoes its previous pawn move, such as `up` then `down`. `--progress-reward-scale` gives a tiny bonus when a pawn move shortens the learner's path to goal. These are training hints, not rule changes.
 
 ## Visualize Training Progress
 
@@ -521,6 +681,8 @@ eval_greedy_p0_win_rate
 eval_greedy_p1_win_rate
 eval_mixed_p0_win_rate
 eval_mixed_p1_win_rate
+eval_anti_rush_lite_p0_win_rate
+eval_anti_rush_lite_p1_win_rate
 eval_anti_rush_p0_win_rate
 eval_anti_rush_p1_win_rate
 eval_balanced_win_rate
@@ -581,8 +743,8 @@ The dashboard can:
 
 - launch one experiment at a time
 - stop the active process
-- choose from the main experiment presets: `random`, `mixed`, `mixed + shaped reward`, `checkpoint pool`, and `cnn self-play`
-- still edit opponent, policy, timesteps, seed, replay frequency, shaped reward, self-play settings, learner-side randomization, scripted evaluation settings, and checkpoint glob directly
+- choose from the main experiment presets: `random`, `mixed`, `mixed + shaped reward`, `checkpoint pool`, `cnn foundation`, `cnn anti-rush lite`, `cnn anti-rush bridge`, `cnn anti-rush shaped`, `cnn anti-rush endgame`, `cnn anti-rush gentle`, `cnn anti-rush`, `cnn anti-rush+`, and `cnn self-play`
+- still edit opponent, policy, timesteps, seed, replay frequency, shaped reward, self-play settings, learner-side randomization, wall/reverse-move/progress rewards, scripted evaluation settings, checkpoint glob, and initial model directly
 - graph multiple live `metrics.jsonl` values at once, including training reward, scripted win rates, episode length, FPS, episodes, self-play pool size, and train losses when available
 - change the selected graph metrics while training is running
 - save the current graph as `graphs/metrics.svg` inside the selected run directory
@@ -623,6 +785,8 @@ eval_greedy_p0_win_rate
 eval_greedy_p1_win_rate
 eval_mixed_p0_win_rate
 eval_mixed_p1_win_rate
+eval_anti_rush_lite_p0_win_rate
+eval_anti_rush_lite_p1_win_rate
 eval_anti_rush_p0_win_rate
 eval_anti_rush_p1_win_rate
 eval_balanced_win_rate
@@ -630,6 +794,10 @@ train_loss
 train_value_loss
 train_entropy_loss
 train_policy_gradient_loss
+train_survival_reward_mean
+train_opponent_wall_value_delta_mean
+train_opponent_wall_value_reward_mean
+train_endgame_start_mean
 self_play_pool_size
 ```
 
@@ -642,7 +810,15 @@ random: 25,000 timesteps
 mixed: 25,000 timesteps
 mixed + shaped reward: 25,000 timesteps
 checkpoint pool: 25,000 timesteps after at least one earlier run has produced a checkpoint
-cnn self-play: 50,000 timesteps for a first smoke test, then 250,000+ for useful comparisons
+cnn foundation: 50,000 timesteps for a first smoke test, then 100,000+ if greedy win rates are improving
+cnn anti-rush lite: 50,000 timesteps after a good foundation checkpoint exists
+cnn anti-rush bridge: 50,000 timesteps from the lite best checkpoint
+cnn anti-rush shaped: 50,000 timesteps from the lite best checkpoint when bridge stays at 0% full anti-rush
+cnn anti-rush endgame: 50,000 timesteps from the shaped best checkpoint
+cnn anti-rush gentle: optional comparison from the lite best checkpoint
+cnn anti-rush: 50,000 timesteps after the bridge stage improves full anti-rush
+cnn anti-rush+: optional extra hardening after full anti-rush starts improving
+cnn self-play: only after the full anti-rush model keeps greedy wins and improves anti-rush wins
 ```
 
 These are smoke-test lengths. They are enough to check that metrics, replays, checkpoints, and the UI are behaving, but not enough to judge the best training strategy. For the first meaningful comparison, rerun the same four presets at around `100,000` timesteps each. Use the checkpoint pool after you have a usable checkpoint glob, for example:
@@ -705,15 +881,17 @@ Implemented:
 - Checkpointing and opponent pools.
 - Compact CNN policy option.
 - Refreshing self-play checkpoint pool.
-- Curriculum opponent with anti-rush wall pressure.
+- Foundation curriculum opponent focused on random/greedy racing.
+- Light anti-rush curriculum and initial-model continuation.
+- Full anti-rush and stronger anti-rush continuation stages.
 - Optional shaped rewards.
+- Optional wall-use, reverse-move, and forward-progress training hints.
 - Experiment runner and local dashboard.
 
 ## Suggested Next Steps
 
-1. Run longer baseline experiments: random, mixed, shaped mixed, checkpoint pool.
-2. Compare checkpoints with model evaluation plus replay summaries.
-3. Compare `mlp` versus `cnn` on the same opponent schedule.
-4. Select and compare checkpoints by `eval_balanced_win_rate`, not only final rollout reward.
-5. Move from the AEC wrapper scaffold to full PettingZoo self-play training.
-6. Optimize BFS/path checks further if long runs are still CPU-bound.
+1. Run the new `cnn anti-rush endgame` preset for `50,000` timesteps using `runs/ui_experiments/cnn_anti_rush_shaped/best/best_model.zip` as the initial model.
+2. Check that `eval_greedy_p0_win_rate` and `eval_greedy_p1_win_rate` stay above roughly 80% while `eval_anti_rush_p0_win_rate` and `eval_anti_rush_p1_win_rate` start moving above zero.
+3. Inspect p0/p1 replays for purposeful wall responses rather than renewed wall spam.
+4. Use the best anti-rush checkpoint as the initial model for `cnn self-play`.
+5. Move from the AEC wrapper scaffold to full PettingZoo self-play training once the single-agent staged curriculum is stable.

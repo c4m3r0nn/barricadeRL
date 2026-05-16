@@ -48,6 +48,12 @@ def make_training_env(
     self_play_patterns: list[str] | None = None,
     randomize_learner_side: bool = False,
     checkpoint_probability: float = 1.0,
+    wall_penalty: float = 0.0,
+    reverse_move_penalty: float = 0.0,
+    progress_reward_scale: float = 0.0,
+    survival_reward: float = 0.0,
+    opponent_wall_value_penalty_scale: float = 0.0,
+    endgame_start_probability: float = 0.0,
 ):
     from sb3_contrib.common.wrappers import ActionMasker
     from stable_baselines3.common.monitor import Monitor
@@ -65,10 +71,17 @@ def make_training_env(
                     checkpoint_probability=checkpoint_probability,
                 ),
                 shaped_reward=shaped_reward,
+                wall_penalty=wall_penalty,
+                reverse_move_penalty=reverse_move_penalty,
+                progress_reward_scale=progress_reward_scale,
+                survival_reward=survival_reward,
+                opponent_wall_value_penalty_scale=opponent_wall_value_penalty_scale,
+                endgame_start_probability=endgame_start_probability,
                 learner_side=None if randomize_learner_side else 0,
             ),
             mask_fn,
-        )
+        ),
+        info_keywords=("survival_reward", "opponent_wall_value_delta", "opponent_wall_value_reward", "endgame_start"),
     )
 
 
@@ -225,6 +238,10 @@ class MetricsJsonlCallback:
                         row["train_env_ep_rew_mean"] = row["ep_rew_mean"]
                     if lengths:
                         row["ep_len_mean"] = float(sum(lengths) / len(lengths))
+                    for key in ("survival_reward", "opponent_wall_value_delta", "opponent_wall_value_reward", "endgame_start"):
+                        values = [info[key] for info in ep_infos if key in info]
+                        if values:
+                            row[f"train_{key}_mean"] = float(sum(values) / len(values))
                 # SB3 exposes recent train scalars through the logger after updates.
                 for key, value in getattr(self.logger, "name_to_value", {}).items():
                     if key.startswith("train/"):
@@ -283,12 +300,19 @@ def train_maskable_ppo(
     out: Path,
     replay_freq: int = 1_000,
     checkpoint_opponents: list[str] | None = None,
+    initial_model: str | Path | None = None,
     shaped_reward: bool = False,
     policy: str = "mlp",
     self_play: bool = False,
     self_play_save_freq: int = 10_000,
     randomize_learner_side: bool = False,
     checkpoint_probability: float = 0.60,
+    wall_penalty: float = 0.0,
+    reverse_move_penalty: float = 0.0,
+    progress_reward_scale: float = 0.0,
+    survival_reward: float = 0.0,
+    opponent_wall_value_penalty_scale: float = 0.0,
+    endgame_start_probability: float = 0.0,
     eval_opponents: list[str] | None = None,
     eval_episodes: int = 10,
     scripted_eval_freq: int | None = None,
@@ -308,6 +332,12 @@ def train_maskable_ppo(
         self_play_patterns=self_play_patterns,
         randomize_learner_side=randomize_learner_side,
         checkpoint_probability=checkpoint_probability if self_play else 1.0,
+        wall_penalty=wall_penalty,
+        reverse_move_penalty=reverse_move_penalty,
+        progress_reward_scale=progress_reward_scale,
+        survival_reward=survival_reward,
+        opponent_wall_value_penalty_scale=opponent_wall_value_penalty_scale,
+        endgame_start_probability=endgame_start_probability,
     )
     eval_env = make_training_env(
         opponent,
@@ -315,6 +345,12 @@ def train_maskable_ppo(
         shaped_reward=shaped_reward,
         self_play_patterns=self_play_patterns,
         checkpoint_probability=checkpoint_probability if self_play else 1.0,
+        wall_penalty=wall_penalty,
+        reverse_move_penalty=reverse_move_penalty,
+        progress_reward_scale=progress_reward_scale,
+        survival_reward=survival_reward,
+        opponent_wall_value_penalty_scale=opponent_wall_value_penalty_scale,
+        endgame_start_probability=endgame_start_probability,
     )
     eval_callback = MaskableEvalCallback(
         eval_env,
@@ -342,7 +378,12 @@ def train_maskable_ppo(
     if self_play:
         callback_items.append(SelfPlayCheckpointCallback(out, self_play_save_freq).callback)
     callbacks = CallbackList(callback_items)
-    model = build_model(train_env, seed=seed, tensorboard_log=out / "tb", policy=policy)
+    if initial_model:
+        from sb3_contrib import MaskablePPO
+
+        model = MaskablePPO.load(initial_model, env=train_env, tensorboard_log=str(out / "tb"))
+    else:
+        model = build_model(train_env, seed=seed, tensorboard_log=out / "tb", policy=policy)
     model.learn(total_timesteps=timesteps, callback=callbacks, progress_bar=False)
     model.save(out / "final_model")
     return out / "final_model.zip"
@@ -351,18 +392,51 @@ def train_maskable_ppo(
 def main():
     parser = argparse.ArgumentParser(description="Smoke-train MaskablePPO on Barricade.")
     parser.add_argument("--timesteps", type=int, default=10_000)
-    parser.add_argument("--opponent", choices=["random", "greedy", "mixed", "anti_rush", "curriculum"], default="random")
+    parser.add_argument(
+        "--opponent",
+        choices=[
+            "random",
+            "greedy",
+            "mixed",
+            "anti_rush_lite",
+            "anti_rush_medium",
+            "anti_rush",
+            "curriculum",
+            "curriculum_stage2",
+            "curriculum_stage3_bridge",
+            "curriculum_stage3_gentle",
+            "curriculum_stage3",
+        ],
+        default="random",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path("runs/maskable_ppo_barricade"))
     parser.add_argument("--replay-freq", type=int, default=1_000, help="Save one replay every N timesteps. Use 0 to disable.")
     parser.add_argument("--checkpoint-opponents", nargs="*", help="Checkpoint paths or glob patterns for a self-play opponent pool.")
+    parser.add_argument("--initial-model", type=Path, help="Existing model checkpoint to continue training from.")
     parser.add_argument("--shaped-reward", action="store_true", help="Add small shortest-path shaping to sparse rewards.")
     parser.add_argument("--policy", choices=["mlp", "cnn"], default="mlp", help="Policy architecture to train.")
     parser.add_argument("--self-play", action="store_true", help="Save current-run checkpoints and train against a refreshing pool of older snapshots.")
     parser.add_argument("--self-play-save-freq", type=int, default=10_000, help="Save a self-play checkpoint every N timesteps.")
     parser.add_argument("--randomize-learner-side", action="store_true", help="Randomly train the learner as player 0 or player 1 each episode.")
     parser.add_argument("--checkpoint-probability", type=float, default=0.60, help="For self-play, probability of sampling a checkpoint opponent instead of the scripted fallback.")
-    parser.add_argument("--eval-opponents", nargs="*", choices=["random", "greedy", "mixed", "anti_rush"], default=["random", "greedy", "mixed", "anti_rush"])
+    parser.add_argument("--wall-penalty", type=float, default=0.0, help="Small reward penalty for each learner wall placement.")
+    parser.add_argument("--reverse-move-penalty", type=float, default=0.0, help="Small reward penalty when the learner immediately reverses its previous pawn move.")
+    parser.add_argument("--progress-reward-scale", type=float, default=0.0, help="Small reward bonus when a learner pawn move shortens its path to goal.")
+    parser.add_argument("--survival-reward", type=float, default=0.0, help="Small reward bonus for surviving a nonterminal opponent turn.")
+    parser.add_argument(
+        "--opponent-wall-value-penalty-scale",
+        type=float,
+        default=0.0,
+        help="Penalty scale for opponent walls that increase the learner's shortest path.",
+    )
+    parser.add_argument("--endgame-start-probability", type=float, default=0.0, help="Probability of resetting episodes from a near-goal anti-rush practice state.")
+    parser.add_argument(
+        "--eval-opponents",
+        nargs="*",
+        choices=["random", "greedy", "mixed", "anti_rush_lite", "anti_rush"],
+        default=["random", "greedy", "mixed", "anti_rush_lite", "anti_rush"],
+    )
     parser.add_argument("--eval-episodes", type=int, default=10, help="Episodes per scripted evaluation opponent. Use 0 to disable.")
     parser.add_argument("--scripted-eval-freq", type=int, help="Evaluate against scripted opponents every N timesteps.")
     args = parser.parse_args()
@@ -374,12 +448,19 @@ def main():
         out=args.out,
         replay_freq=args.replay_freq,
         checkpoint_opponents=args.checkpoint_opponents,
+        initial_model=args.initial_model,
         shaped_reward=args.shaped_reward,
         policy=args.policy,
         self_play=args.self_play,
         self_play_save_freq=args.self_play_save_freq,
         randomize_learner_side=args.randomize_learner_side,
         checkpoint_probability=args.checkpoint_probability,
+        wall_penalty=args.wall_penalty,
+        reverse_move_penalty=args.reverse_move_penalty,
+        progress_reward_scale=args.progress_reward_scale,
+        survival_reward=args.survival_reward,
+        opponent_wall_value_penalty_scale=args.opponent_wall_value_penalty_scale,
+        endgame_start_probability=args.endgame_start_probability,
         eval_opponents=args.eval_opponents,
         eval_episodes=args.eval_episodes,
         scripted_eval_freq=args.scripted_eval_freq,

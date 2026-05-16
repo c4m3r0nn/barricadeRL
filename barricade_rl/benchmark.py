@@ -32,7 +32,7 @@ def run_benchmark(episodes: int, opponent_name: str, seed: int):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark Barricade environment step speed.")
     parser.add_argument("--episodes", type=int, default=100)
-    parser.add_argument("--opponent", choices=["random", "greedy", "mixed"], default="random")
+    parser.add_argument("--opponent", choices=["random", "greedy", "mixed", "anti_rush_lite", "anti_rush_medium", "anti_rush"], default="random")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     run_benchmark(args.episodes, args.opponent, args.seed)

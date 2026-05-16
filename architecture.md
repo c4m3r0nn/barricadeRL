@@ -316,6 +316,38 @@ This is like a coach saying, "Good, you moved closer to the goal," even before t
 
 Shaping is optional because it can distort learning. If the hint is too strong, the model may optimize "short path" instead of "win the game."
 
+The trainer also has small optional action-level training hints:
+
+```bash
+barricade-train-maskable-ppo --wall-penalty 0.05 --reverse-move-penalty 0.02 --progress-reward-scale 0.03
+```
+
+The wall penalty is like charging a small price for each wall. A useful wall is still worth playing, but the model is discouraged from spending all walls just because wall actions look important. The reverse-move penalty is aimed at pawn oscillation. If the model moves `up` and immediately moves `down`, it pays a small cost because it has gone nowhere.
+
+The progress reward is a small bonus when a pawn move shortens the learner's shortest path to goal. In real-life terms, this is like rewarding a beginner for walking toward the finish line before asking them to master advanced blocking tactics.
+
+These penalties are not game rules. They are training hints. The playable UI and the core rules still allow legal wall placements and legal backtracking.
+
+Anti-rush training also has two targeted hints:
+
+```bash
+barricade-train-maskable-ppo --survival-reward 0.004 --opponent-wall-value-penalty-scale 0.04
+```
+
+The survival reward is a tiny bonus for getting through the opponent turn without losing. The opponent wall value penalty measures how much an opponent wall increased the learner's shortest path and subtracts a small amount. In real-life terms, if someone blocks your route, the training signal asks: "Did that block actually hurt you?" If it did, the model pays a small cost.
+
+These hints are meant for the anti-rush cliff only. They should stay small because the real goal is still winning the game, not merely surviving forever.
+
+The trainer can also use endgame starts:
+
+```bash
+barricade-train-maskable-ppo --endgame-start-probability 0.30
+```
+
+This means some episodes do not begin from the normal opening. Instead, the learner starts 2-4 moves from goal with both players still having legal paths. This is called backward curriculum because training begins closer to the hard ending and later connects that skill back to full games.
+
+In real-life terms, it is like practicing penalty kicks directly instead of only playing full matches and hoping enough penalty situations appear.
+
 ## Opponents
 
 File:
@@ -330,7 +362,16 @@ Implemented opponents:
 RandomOpponent
 GreedyOpponent
 MixedOpponent
+AntiRushLiteOpponent
+AntiRushMediumOpponent
+AntiRushOpponent
+CurriculumOpponent
+StageTwoCurriculumOpponent
+StageThreeBridgeCurriculumOpponent
+StageThreeGentleCurriculumOpponent
+StageThreeCurriculumOpponent
 CheckpointPoolOpponent
+RefreshingCheckpointPoolOpponent
 ```
 
 `RandomOpponent` chooses a random legal move.
@@ -339,7 +380,25 @@ CheckpointPoolOpponent
 
 `MixedOpponent` randomly alternates between random and greedy behavior.
 
+`AntiRushLiteOpponent` is a softer walling opponent. It only considers walls when the runner is closer to goal, it refuses walls that slow itself down, and it only chooses a wall some of the time. In real-life terms, this is like practicing against a cautious defender before facing someone who blocks aggressively every time.
+
+`AntiRushMediumOpponent` uses the full anti-rush timing and self-cost rules but does not wall every time. In real-life terms, it is a sparring partner who knows the real defensive pattern but does not apply maximum pressure on every turn.
+
+`AntiRushOpponent` uses walls only when the learner is close enough to goal and the wall meaningfully increases the learner's path without hurting the opponent too much. This keeps it from teaching wall-heavy play at the start of every game.
+
+`CurriculumOpponent` samples from random, greedy, anti-rush, and mixed opponents. The current default is a foundation curriculum: mostly greedy, some random, a little mixed, and no anti-rush pressure. This is like learning to race cleanly before adding a defender.
+
+`StageTwoCurriculumOpponent` is the next lesson after foundation training. It keeps greedy play as the main opponent but introduces `AntiRushLiteOpponent`. This is like adding a moderate defender after the player can already run the basic route.
+
+`StageThreeBridgeCurriculumOpponent` uses `AntiRushMediumOpponent` as targeted drills. This is the current bridge from lite anti-rush to full anti-rush, because a small amount of full anti-rush was still too hard to learn from directly.
+
+`StageThreeGentleCurriculumOpponent` is the safer bridge from lite anti-rush to full anti-rush. It keeps greedy play dominant and adds only a small amount of full anti-rush. This is like letting a learner face a serious defender for a few drills per session instead of making every drill high pressure.
+
+`StageThreeCurriculumOpponent` raises full anti-rush pressure further while keeping greedy play as the majority opponent. It is meant for continuing from a successful gentle-stage checkpoint, not for training from scratch.
+
 `CheckpointPoolOpponent` loads trained model checkpoints and samples one as the opponent.
+
+`RefreshingCheckpointPoolOpponent` watches checkpoint glob patterns during training, so new self-play snapshots can become opponents without restarting the run.
 
 The checkpoint pool is the first step toward self-play. Self-play means a model improves by playing against current or older versions of itself.
 
@@ -426,6 +485,7 @@ opponent
 seed
 whether shaped reward is enabled
 checkpoint opponent patterns
+initial model to continue from
 replay frequency
 ```
 
@@ -616,14 +676,16 @@ Use this sequence:
 
 ```text
 1. Open the experiment dashboard.
-2. Run a random-opponent baseline.
-3. Run a mixed-opponent baseline.
-4. Run mixed with shaped reward.
-5. Run checkpoint-pool training using the best previous checkpoint.
-6. Evaluate all final and best models with the same episode count and seed.
-7. Compare replay summaries.
-8. Watch selected games in the replay UI.
-9. Only then change model architecture.
+2. Run the CNN foundation preset.
+3. Run the CNN anti-rush lite preset from the foundation checkpoint.
+4. Run the CNN anti-rush shaped preset from the lite best checkpoint.
+5. Run the CNN anti-rush endgame preset from the shaped best checkpoint.
+6. Run the CNN anti-rush preset from the endgame best checkpoint only if the endgame stage improves full anti-rush.
+7. Evaluate all final and best models with the same episode count and seed.
+8. Compare replay summaries.
+9. Watch selected games in the replay UI.
+10. Start self-play only after the scripted curriculum is stable.
+11. Only then change model architecture.
 ```
 
 This keeps the project honest. If architecture changes happen before the experiment loop is reliable, it becomes hard to know whether improvement came from the architecture or from noise.

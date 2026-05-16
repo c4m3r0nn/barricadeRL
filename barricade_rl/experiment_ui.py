@@ -30,9 +30,15 @@ METRIC_OPTIONS = [
     "eval_greedy_p1_win_rate",
     "eval_mixed_p0_win_rate",
     "eval_mixed_p1_win_rate",
+    "eval_anti_rush_lite_p0_win_rate",
+    "eval_anti_rush_lite_p1_win_rate",
     "eval_anti_rush_p0_win_rate",
     "eval_anti_rush_p1_win_rate",
     "eval_balanced_win_rate",
+    "train_survival_reward_mean",
+    "train_opponent_wall_value_delta_mean",
+    "train_opponent_wall_value_reward_mean",
+    "train_endgame_start_mean",
     "fps",
     "episodes",
     "train_loss",
@@ -66,10 +72,17 @@ class ExperimentDashboard:
         self.self_play_save_freq_var = tk.StringVar(value="10000")
         self.randomize_learner_side_var = tk.BooleanVar(value=False)
         self.checkpoint_probability_var = tk.StringVar(value="0.60")
-        self.eval_opponents_var = tk.StringVar(value="random greedy mixed anti_rush")
+        self.wall_penalty_var = tk.StringVar(value="0.0")
+        self.reverse_move_penalty_var = tk.StringVar(value="0.0")
+        self.progress_reward_scale_var = tk.StringVar(value="0.0")
+        self.survival_reward_var = tk.StringVar(value="0.0")
+        self.opponent_wall_value_penalty_scale_var = tk.StringVar(value="0.0")
+        self.endgame_start_probability_var = tk.StringVar(value="0.0")
+        self.eval_opponents_var = tk.StringVar(value="random greedy mixed anti_rush_lite anti_rush")
         self.eval_episodes_var = tk.StringVar(value="10")
         self.scripted_eval_freq_var = tk.StringVar(value="")
         self.checkpoint_var = tk.StringVar(value="")
+        self.initial_model_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="Idle")
         self._build()
         self.refresh_loop()
@@ -112,7 +125,21 @@ class ExperimentDashboard:
         self._field(left, "Seed", self.seed_var)
         self._field(left, "Replay freq", self.replay_freq_var)
         tk.Label(left, text="Opponent").pack(anchor="w")
-        tk.OptionMenu(left, self.opponent_var, "random", "greedy", "mixed", "anti_rush", "curriculum").pack(fill="x")
+        tk.OptionMenu(
+            left,
+            self.opponent_var,
+            "random",
+            "greedy",
+            "mixed",
+            "anti_rush_lite",
+            "anti_rush_medium",
+            "anti_rush",
+            "curriculum",
+            "curriculum_stage2",
+            "curriculum_stage3_bridge",
+            "curriculum_stage3_gentle",
+            "curriculum_stage3",
+        ).pack(fill="x")
         tk.Label(left, text="Policy").pack(anchor="w", pady=(8, 0))
         tk.OptionMenu(left, self.policy_var, "mlp", "cnn").pack(fill="x")
         tk.Checkbutton(left, text="Shaped reward", variable=self.shaped_var).pack(anchor="w", pady=(8, 2))
@@ -120,10 +147,17 @@ class ExperimentDashboard:
         tk.Checkbutton(left, text="Randomize learner side", variable=self.randomize_learner_side_var).pack(anchor="w", pady=(8, 2))
         self._field(left, "Self-play save freq", self.self_play_save_freq_var)
         self._field(left, "Checkpoint sample prob", self.checkpoint_probability_var)
+        self._field(left, "Wall penalty", self.wall_penalty_var)
+        self._field(left, "Reverse move penalty", self.reverse_move_penalty_var)
+        self._field(left, "Progress reward", self.progress_reward_scale_var)
+        self._field(left, "Survival reward", self.survival_reward_var)
+        self._field(left, "Opponent wall penalty", self.opponent_wall_value_penalty_scale_var)
+        self._field(left, "Endgame start prob", self.endgame_start_probability_var)
         self._field(left, "Eval opponents", self.eval_opponents_var)
         self._field(left, "Eval episodes", self.eval_episodes_var)
         self._field(left, "Eval freq", self.scripted_eval_freq_var)
         self._field(left, "Checkpoint glob", self.checkpoint_var)
+        self._field(left, "Initial model", self.initial_model_var)
 
         tk.Button(left, text="Start", command=self.start_experiment).pack(fill="x", pady=(12, 2))
         tk.Button(left, text="Stop", command=self.stop_experiment).pack(fill="x", pady=2)
@@ -186,10 +220,17 @@ class ExperimentDashboard:
         self.self_play_save_freq_var.set(str(spec.self_play_save_freq))
         self.randomize_learner_side_var.set(spec.randomize_learner_side)
         self.checkpoint_probability_var.set(str(spec.checkpoint_probability))
+        self.wall_penalty_var.set(str(spec.wall_penalty))
+        self.reverse_move_penalty_var.set(str(spec.reverse_move_penalty))
+        self.progress_reward_scale_var.set(str(spec.progress_reward_scale))
+        self.survival_reward_var.set(str(spec.survival_reward))
+        self.opponent_wall_value_penalty_scale_var.set(str(spec.opponent_wall_value_penalty_scale))
+        self.endgame_start_probability_var.set(str(spec.endgame_start_probability))
         self.eval_opponents_var.set(" ".join(spec.eval_opponents))
         self.eval_episodes_var.set(str(spec.eval_episodes))
         self.scripted_eval_freq_var.set("" if spec.scripted_eval_freq is None else str(spec.scripted_eval_freq))
         self.checkpoint_var.set(" ".join(spec.checkpoint_opponents))
+        self.initial_model_var.set(spec.initial_model)
 
     def spec(self) -> ExperimentSpec:
         checkpoints = [value for value in self.checkpoint_var.get().split() if value]
@@ -202,12 +243,19 @@ class ExperimentDashboard:
             seed=int(self.seed_var.get()),
             shaped_reward=self.shaped_var.get(),
             checkpoint_opponents=checkpoints,
+            initial_model=self.initial_model_var.get().strip(),
             replay_freq=int(self.replay_freq_var.get()),
             policy=self.policy_var.get(),
             self_play=self.self_play_var.get(),
             self_play_save_freq=int(self.self_play_save_freq_var.get()),
             randomize_learner_side=self.randomize_learner_side_var.get(),
             checkpoint_probability=float(self.checkpoint_probability_var.get()),
+            wall_penalty=float(self.wall_penalty_var.get()),
+            reverse_move_penalty=float(self.reverse_move_penalty_var.get()),
+            progress_reward_scale=float(self.progress_reward_scale_var.get()),
+            survival_reward=float(self.survival_reward_var.get()),
+            opponent_wall_value_penalty_scale=float(self.opponent_wall_value_penalty_scale_var.get()),
+            endgame_start_probability=float(self.endgame_start_probability_var.get()),
             eval_opponents=eval_opponents,
             eval_episodes=int(self.eval_episodes_var.get()),
             scripted_eval_freq=int(scripted_eval_freq) if scripted_eval_freq else None,

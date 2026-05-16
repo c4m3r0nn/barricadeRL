@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from barricade_rl.evaluate import EvaluationResult
 from barricade_rl.experiments import (
     ExperimentSpec,
@@ -21,11 +23,18 @@ def test_build_train_command_includes_core_options(tmp_path: Path):
         seed=7,
         shaped_reward=True,
         checkpoint_opponents=["runs/base/best/*.zip"],
+        initial_model="runs/foundation/final_model.zip",
         policy="cnn",
         self_play=True,
         self_play_save_freq=2048,
         randomize_learner_side=True,
         checkpoint_probability=0.55,
+        wall_penalty=0.01,
+        reverse_move_penalty=0.02,
+        progress_reward_scale=0.03,
+        survival_reward=0.004,
+        opponent_wall_value_penalty_scale=0.05,
+        endgame_start_probability=0.3,
         eval_opponents=["random", "mixed"],
         eval_episodes=12,
         scripted_eval_freq=4096,
@@ -40,6 +49,8 @@ def test_build_train_command_includes_core_options(tmp_path: Path):
     assert "--shaped-reward" in command
     assert "--checkpoint-opponents" in command
     assert "runs/base/best/*.zip" in command
+    assert "--initial-model" in command
+    assert "runs/foundation/final_model.zip" in command
     assert "--policy" in command
     assert "cnn" in command
     assert "--self-play" in command
@@ -48,6 +59,18 @@ def test_build_train_command_includes_core_options(tmp_path: Path):
     assert "--randomize-learner-side" in command
     assert "--checkpoint-probability" in command
     assert "0.55" in command
+    assert "--wall-penalty" in command
+    assert "0.01" in command
+    assert "--reverse-move-penalty" in command
+    assert "0.02" in command
+    assert "--progress-reward-scale" in command
+    assert "0.03" in command
+    assert "--survival-reward" in command
+    assert "0.004" in command
+    assert "--opponent-wall-value-penalty-scale" in command
+    assert "0.05" in command
+    assert "--endgame-start-probability" in command
+    assert "0.3" in command
     assert "--eval-opponents" in command
     assert "random" in command
     assert "--eval-episodes" in command
@@ -90,17 +113,83 @@ def test_build_report_contains_config_metrics_and_eval(tmp_path: Path):
 def test_experiment_presets_include_named_training_modes():
     presets = experiment_presets(timesteps=25_000, seed=10, checkpoint_glob="runs/base/*.zip")
 
-    assert list(presets) == ["random", "mixed", "mixed + shaped reward", "checkpoint pool", "cnn self-play"]
+    assert list(presets) == [
+        "random",
+        "mixed",
+        "mixed + shaped reward",
+        "checkpoint pool",
+        "cnn foundation",
+        "cnn anti-rush lite",
+        "cnn anti-rush bridge",
+        "cnn anti-rush shaped",
+        "cnn anti-rush endgame",
+        "cnn anti-rush gentle",
+        "cnn anti-rush",
+        "cnn anti-rush+",
+        "cnn self-play",
+    ]
     assert presets["random"].opponent == "random"
     assert presets["mixed"].opponent == "mixed"
     assert presets["mixed + shaped reward"].shaped_reward is True
     assert presets["checkpoint pool"].checkpoint_opponents == ["runs/base/*.zip"]
     assert presets["checkpoint pool"].seed == 13
+    assert presets["cnn foundation"].policy == "cnn"
+    assert presets["cnn foundation"].opponent == "curriculum"
+    assert presets["cnn foundation"].self_play is False
+    assert presets["cnn foundation"].randomize_learner_side is True
+    assert presets["cnn foundation"].checkpoint_opponents == []
+    assert presets["cnn foundation"].wall_penalty == 0.05
+    assert presets["cnn foundation"].reverse_move_penalty == 0.02
+    assert presets["cnn foundation"].progress_reward_scale == 0.03
+    assert presets["cnn anti-rush lite"].policy == "cnn"
+    assert presets["cnn anti-rush lite"].opponent == "curriculum_stage2"
+    assert presets["cnn anti-rush lite"].self_play is False
+    assert presets["cnn anti-rush lite"].randomize_learner_side is True
+    assert presets["cnn anti-rush lite"].initial_model == "runs/ui_experiments/cnn_foundation/final_model.zip"
+    assert presets["cnn anti-rush lite"].wall_penalty == 0.03
+    assert presets["cnn anti-rush lite"].reverse_move_penalty == 0.02
+    assert presets["cnn anti-rush lite"].progress_reward_scale == 0.02
+    assert "anti_rush_lite" in presets["cnn anti-rush lite"].eval_opponents
+    assert presets["cnn anti-rush bridge"].policy == "cnn"
+    assert presets["cnn anti-rush bridge"].opponent == "curriculum_stage3_bridge"
+    assert presets["cnn anti-rush bridge"].initial_model == "runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip"
+    assert presets["cnn anti-rush bridge"].wall_penalty == 0.03
+    assert presets["cnn anti-rush bridge"].reverse_move_penalty == 0.02
+    assert presets["cnn anti-rush bridge"].progress_reward_scale == 0.02
+    assert presets["cnn anti-rush shaped"].policy == "cnn"
+    assert presets["cnn anti-rush shaped"].opponent == "curriculum_stage3_bridge"
+    assert presets["cnn anti-rush shaped"].initial_model == "runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip"
+    assert presets["cnn anti-rush shaped"].survival_reward == pytest.approx(0.004)
+    assert presets["cnn anti-rush shaped"].opponent_wall_value_penalty_scale == pytest.approx(0.04)
+    assert presets["cnn anti-rush endgame"].policy == "cnn"
+    assert presets["cnn anti-rush endgame"].opponent == "curriculum_stage3_bridge"
+    assert presets["cnn anti-rush endgame"].initial_model == "runs/ui_experiments/cnn_anti_rush_shaped/best/best_model.zip"
+    assert presets["cnn anti-rush endgame"].endgame_start_probability == pytest.approx(0.3)
+    assert presets["cnn anti-rush gentle"].policy == "cnn"
+    assert presets["cnn anti-rush gentle"].opponent == "curriculum_stage3_gentle"
+    assert presets["cnn anti-rush gentle"].initial_model == "runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip"
+    assert presets["cnn anti-rush gentle"].wall_penalty == 0.03
+    assert presets["cnn anti-rush gentle"].reverse_move_penalty == 0.02
+    assert presets["cnn anti-rush gentle"].progress_reward_scale == 0.02
+    assert presets["cnn anti-rush"].policy == "cnn"
+    assert presets["cnn anti-rush"].opponent == "curriculum_stage3"
+    assert presets["cnn anti-rush"].initial_model == "runs/ui_experiments/cnn_anti_rush_bridge/best/best_model.zip"
+    assert presets["cnn anti-rush+"].policy == "cnn"
+    assert presets["cnn anti-rush+"].opponent == "curriculum_stage3"
+    assert presets["cnn anti-rush+"].self_play is False
+    assert presets["cnn anti-rush+"].randomize_learner_side is True
+    assert presets["cnn anti-rush+"].initial_model == "runs/ui_experiments/cnn_anti_rush/final_model.zip"
+    assert presets["cnn anti-rush+"].wall_penalty == 0.03
+    assert presets["cnn anti-rush+"].reverse_move_penalty == 0.02
+    assert presets["cnn anti-rush+"].progress_reward_scale == 0.02
     assert presets["cnn self-play"].policy == "cnn"
     assert presets["cnn self-play"].opponent == "curriculum"
     assert presets["cnn self-play"].self_play is True
     assert presets["cnn self-play"].randomize_learner_side is True
-    assert presets["cnn self-play"].checkpoint_probability == 0.60
+    assert presets["cnn self-play"].checkpoint_probability == 0.35
+    assert presets["cnn self-play"].wall_penalty == 0.03
+    assert presets["cnn self-play"].reverse_move_penalty == 0.02
+    assert presets["cnn self-play"].progress_reward_scale == 0.03
 
 
 def test_save_graph_svg_writes_selected_metrics(tmp_path: Path):

@@ -20,13 +20,20 @@ class ExperimentSpec:
     seed: int = 0
     shaped_reward: bool = False
     checkpoint_opponents: list[str] = field(default_factory=list)
+    initial_model: str = ""
     replay_freq: int = 1_000
     policy: str = "mlp"
     self_play: bool = False
     self_play_save_freq: int = 10_000
     randomize_learner_side: bool = False
     checkpoint_probability: float = 0.60
-    eval_opponents: list[str] = field(default_factory=lambda: ["random", "greedy", "mixed", "anti_rush"])
+    wall_penalty: float = 0.0
+    reverse_move_penalty: float = 0.0
+    progress_reward_scale: float = 0.0
+    survival_reward: float = 0.0
+    opponent_wall_value_penalty_scale: float = 0.0
+    endgame_start_probability: float = 0.0
+    eval_opponents: list[str] = field(default_factory=lambda: ["random", "greedy", "mixed", "anti_rush_lite", "anti_rush"])
     eval_episodes: int = 10
     scripted_eval_freq: int | None = None
 
@@ -63,6 +70,8 @@ def build_train_command(spec: ExperimentSpec, root: Path) -> list[str]:
     if spec.checkpoint_opponents:
         command.append("--checkpoint-opponents")
         command.extend(spec.checkpoint_opponents)
+    if spec.initial_model:
+        command.extend(["--initial-model", spec.initial_model])
     if spec.self_play:
         command.append("--self-play")
         command.extend(["--self-play-save-freq", str(spec.self_play_save_freq)])
@@ -70,6 +79,18 @@ def build_train_command(spec: ExperimentSpec, root: Path) -> list[str]:
         command.append("--randomize-learner-side")
     if spec.self_play:
         command.extend(["--checkpoint-probability", str(spec.checkpoint_probability)])
+    if spec.wall_penalty:
+        command.extend(["--wall-penalty", str(spec.wall_penalty)])
+    if spec.reverse_move_penalty:
+        command.extend(["--reverse-move-penalty", str(spec.reverse_move_penalty)])
+    if spec.progress_reward_scale:
+        command.extend(["--progress-reward-scale", str(spec.progress_reward_scale)])
+    if spec.survival_reward:
+        command.extend(["--survival-reward", str(spec.survival_reward)])
+    if spec.opponent_wall_value_penalty_scale:
+        command.extend(["--opponent-wall-value-penalty-scale", str(spec.opponent_wall_value_penalty_scale)])
+    if spec.endgame_start_probability:
+        command.extend(["--endgame-start-probability", str(spec.endgame_start_probability)])
     if spec.eval_opponents:
         command.append("--eval-opponents")
         command.extend(spec.eval_opponents)
@@ -103,17 +124,120 @@ def experiment_presets(
             seed=seed + 3,
             checkpoint_opponents=[checkpoint_glob],
         ),
+        "cnn foundation": ExperimentSpec(
+            name="cnn_foundation",
+            timesteps=timesteps,
+            opponent="curriculum",
+            seed=seed + 4,
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.05,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.03,
+        ),
+        "cnn anti-rush lite": ExperimentSpec(
+            name="cnn_anti_rush_lite",
+            timesteps=timesteps,
+            opponent="curriculum_stage2",
+            seed=seed + 5,
+            initial_model="runs/ui_experiments/cnn_foundation/final_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+        ),
+        "cnn anti-rush bridge": ExperimentSpec(
+            name="cnn_anti_rush_bridge",
+            timesteps=timesteps,
+            opponent="curriculum_stage3_bridge",
+            seed=seed + 6,
+            initial_model="runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+        ),
+        "cnn anti-rush shaped": ExperimentSpec(
+            name="cnn_anti_rush_shaped",
+            timesteps=timesteps,
+            opponent="curriculum_stage3_bridge",
+            seed=seed + 7,
+            initial_model="runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+            survival_reward=0.004,
+            opponent_wall_value_penalty_scale=0.04,
+        ),
+        "cnn anti-rush endgame": ExperimentSpec(
+            name="cnn_anti_rush_endgame",
+            timesteps=timesteps,
+            opponent="curriculum_stage3_bridge",
+            seed=seed + 8,
+            initial_model="runs/ui_experiments/cnn_anti_rush_shaped/best/best_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+            survival_reward=0.004,
+            opponent_wall_value_penalty_scale=0.04,
+            endgame_start_probability=0.30,
+        ),
+        "cnn anti-rush gentle": ExperimentSpec(
+            name="cnn_anti_rush_gentle",
+            timesteps=timesteps,
+            opponent="curriculum_stage3_gentle",
+            seed=seed + 9,
+            initial_model="runs/ui_experiments/cnn_anti_rush_lite/best/best_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+        ),
+        "cnn anti-rush": ExperimentSpec(
+            name="cnn_anti_rush",
+            timesteps=timesteps,
+            opponent="curriculum_stage3",
+            seed=seed + 10,
+            initial_model="runs/ui_experiments/cnn_anti_rush_bridge/best/best_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+        ),
+        "cnn anti-rush+": ExperimentSpec(
+            name="cnn_anti_rush_plus",
+            timesteps=timesteps,
+            opponent="curriculum_stage3",
+            seed=seed + 11,
+            initial_model="runs/ui_experiments/cnn_anti_rush/final_model.zip",
+            policy="cnn",
+            randomize_learner_side=True,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.02,
+        ),
         "cnn self-play": ExperimentSpec(
             name="cnn_self_play",
             timesteps=timesteps,
             opponent="curriculum",
-            seed=seed + 4,
+            seed=seed + 12,
             checkpoint_opponents=[checkpoint_glob],
             policy="cnn",
             self_play=True,
             self_play_save_freq=10_000,
             randomize_learner_side=True,
-            checkpoint_probability=0.60,
+            checkpoint_probability=0.35,
+            wall_penalty=0.03,
+            reverse_move_penalty=0.02,
+            progress_reward_scale=0.03,
         ),
     }
 

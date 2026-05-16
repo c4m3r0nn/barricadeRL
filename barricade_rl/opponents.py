@@ -75,11 +75,13 @@ class AntiRushOpponent:
     fallback: GreedyOpponent = field(default_factory=lambda: GreedyOpponent(wall_probability=0.0))
     min_path_gain: int = 1
     wall_bias_distance: int = 5
+    max_self_cost: int = 1
+    wall_probability: float = 1.0
 
     def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
         player = game.state.current_player
         target = 1 - player
-        if game.state.walls_remaining[player] <= 0:
+        if game.state.walls_remaining[player] <= 0 or rng.random() >= self.wall_probability:
             return self.fallback.select_action(game, rng)
 
         mask = game.legal_actions_mask()
@@ -90,6 +92,8 @@ class AntiRushOpponent:
         current_target_path = game.shortest_path_length(target)
         current_player_path = game.shortest_path_length(player)
         if current_target_path is None or current_player_path is None:
+            return self.fallback.select_action(game, rng)
+        if current_target_path > self.wall_bias_distance:
             return self.fallback.select_action(game, rng)
 
         scored = []
@@ -108,7 +112,7 @@ class AntiRushOpponent:
             self_cost = player_path - current_player_path
             urgency = max(0, self.wall_bias_distance - current_target_path)
             score = target_gain * 4 - self_cost + urgency
-            if target_gain >= self.min_path_gain:
+            if target_gain >= self.min_path_gain and self_cost <= self.max_self_cost:
                 scored.append((score, action))
 
         if not scored:
@@ -119,11 +123,23 @@ class AntiRushOpponent:
 
 
 @dataclass(slots=True)
+class AntiRushLiteOpponent(AntiRushOpponent):
+    wall_bias_distance: int = 4
+    max_self_cost: int = 0
+    wall_probability: float = 0.45
+
+
+@dataclass(slots=True)
+class AntiRushMediumOpponent(AntiRushOpponent):
+    wall_probability: float = 0.70
+
+
+@dataclass(slots=True)
 class CurriculumOpponent:
-    random_weight: float = 0.10
-    greedy_weight: float = 0.30
-    anti_rush_weight: float = 0.45
-    mixed_weight: float = 0.15
+    random_weight: float = 0.25
+    greedy_weight: float = 0.70
+    anti_rush_weight: float = 0.0
+    mixed_weight: float = 0.05
     random_opponent: RandomOpponent = field(default_factory=RandomOpponent)
     greedy_opponent: GreedyOpponent = field(default_factory=lambda: GreedyOpponent(wall_probability=0.0))
     anti_rush_opponent: AntiRushOpponent = field(default_factory=AntiRushOpponent)
@@ -135,6 +151,40 @@ class CurriculumOpponent:
         weights = weights / weights.sum()
         opponent = opponents[int(rng.choice(len(opponents), p=weights))]
         return opponent.select_action(game, rng)
+
+
+@dataclass(slots=True)
+class StageTwoCurriculumOpponent(CurriculumOpponent):
+    random_weight: float = 0.15
+    greedy_weight: float = 0.60
+    anti_rush_weight: float = 0.15
+    mixed_weight: float = 0.10
+    anti_rush_opponent: AntiRushLiteOpponent = field(default_factory=AntiRushLiteOpponent)
+
+
+@dataclass(slots=True)
+class StageThreeCurriculumOpponent(CurriculumOpponent):
+    random_weight: float = 0.10
+    greedy_weight: float = 0.55
+    anti_rush_weight: float = 0.20
+    mixed_weight: float = 0.15
+
+
+@dataclass(slots=True)
+class StageThreeGentleCurriculumOpponent(CurriculumOpponent):
+    random_weight: float = 0.15
+    greedy_weight: float = 0.67
+    anti_rush_weight: float = 0.08
+    mixed_weight: float = 0.10
+
+
+@dataclass(slots=True)
+class StageThreeBridgeCurriculumOpponent(CurriculumOpponent):
+    random_weight: float = 0.12
+    greedy_weight: float = 0.58
+    anti_rush_weight: float = 0.20
+    mixed_weight: float = 0.10
+    anti_rush_opponent: AntiRushMediumOpponent = field(default_factory=AntiRushMediumOpponent)
 
 
 @dataclass(slots=True)
@@ -245,6 +295,20 @@ def make_opponent(name: str) -> OpponentPolicy:
         return MixedOpponent()
     if normalized in {"anti_rush", "anti-rush"}:
         return AntiRushOpponent()
+    if normalized in {"anti_rush_lite", "anti-rush-lite", "lite_anti_rush"}:
+        return AntiRushLiteOpponent()
+    if normalized in {"anti_rush_medium", "anti-rush-medium", "medium_anti_rush"}:
+        return AntiRushMediumOpponent()
     if normalized in {"curriculum", "balanced"}:
         return CurriculumOpponent()
-    raise ValueError(f"Unknown opponent '{name}'. Expected 'random', 'greedy', 'mixed', 'anti_rush', or 'curriculum'.")
+    if normalized in {"curriculum_stage2", "stage2", "anti_rush_curriculum"}:
+        return StageTwoCurriculumOpponent()
+    if normalized in {"curriculum_stage3_bridge", "stage3_bridge", "anti_rush_bridge"}:
+        return StageThreeBridgeCurriculumOpponent()
+    if normalized in {"curriculum_stage3_gentle", "stage3_gentle", "anti_rush_gentle"}:
+        return StageThreeGentleCurriculumOpponent()
+    if normalized in {"curriculum_stage3", "stage3", "anti_rush_plus"}:
+        return StageThreeCurriculumOpponent()
+    raise ValueError(
+        f"Unknown opponent '{name}'. Expected 'random', 'greedy', 'mixed', 'anti_rush_lite', 'anti_rush_medium', 'anti_rush', 'curriculum', 'curriculum_stage2', 'curriculum_stage3_bridge', 'curriculum_stage3_gentle', or 'curriculum_stage3'."
+    )

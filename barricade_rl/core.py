@@ -100,6 +100,13 @@ class BarricadeGame:
         self._shortest_path_cache = {}
         return self.state
 
+    def set_state(self, state: BarricadeState) -> BarricadeState:
+        self.state = state.copy()
+        self._legal_actions_cache_key = None
+        self._legal_actions_cache = None
+        self._shortest_path_cache = {}
+        return self.state
+
     @property
     def terminated(self) -> bool:
         return self.state.winner is not None
