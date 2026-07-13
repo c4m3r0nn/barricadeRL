@@ -1,314 +1,186 @@
 from __future__ import annotations
 
-import glob
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 
-from barricade_rl.core import BarricadeGame, MOVE_ACTIONS, canonical_action_to_absolute, decode_wall_action
+from .game import Game, State, TerminalStatus
+
+LADDER_VERSION = 1
+WIN_SCORE = 1_000_000.0
 
 
 class OpponentPolicy(Protocol):
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        """Choose a legal action for the game's current player."""
+    name: str
+
+    def select_action(self, game: Game, state: State, rng: np.random.Generator) -> int: ...
 
 
-def legal_actions(game: BarricadeGame) -> np.ndarray:
-    return np.flatnonzero(game.legal_actions_mask())
+def _legal(game: Game, state: State) -> list[int]:
+    return [int(action) for action in np.flatnonzero(game.legal_actions(state))]
 
 
-@dataclass(slots=True)
+def _evaluation(game: Game, state: State, player: int) -> float:
+    status = game.is_terminal(state)
+    if status is TerminalStatus.MOVER_LOST:
+        return WIN_SCORE if 1 - state.current_player == player else -WIN_SCORE
+    if status is TerminalStatus.CAPPED:
+        return 0.0
+    own_distance = game.shortest_path_distance(state, player)
+    opponent_distance = game.shortest_path_distance(state, 1 - player)
+    if own_distance is None or opponent_distance is None:
+        raise AssertionError("legal state has no path to goal")
+    wall_difference = state.walls_remaining[player] - state.walls_remaining[1 - player]
+    return float(opponent_distance - own_distance) + 0.7 * wall_difference
+
+
+@dataclass(frozen=True, slots=True)
 class RandomOpponent:
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        actions = legal_actions(game)
-        if len(actions) == 0:
-            raise RuntimeError("No legal opponent actions available")
-        return int(rng.choice(actions))
+    name: str = "random"
+
+    def select_action(self, game: Game, state: State, rng: np.random.Generator) -> int:
+        legal = np.flatnonzero(game.legal_actions(state))
+        if not legal.size:
+            raise ValueError("cannot select an action in a terminal state")
+        return int(rng.choice(legal))
 
 
-@dataclass(slots=True)
-class GreedyOpponent:
-    wall_probability: float = 0.05
+@dataclass(frozen=True, slots=True)
+class GreedyRacer:
+    name: str = "greedy-racer"
 
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        mask = game.legal_actions_mask()
-        move_actions = [action for action in MOVE_ACTIONS if mask[action]]
-        if move_actions and rng.random() >= self.wall_probability:
-            player = game.state.current_player
-            scored = []
-            original = game.state.pawns[player]
-            for action in move_actions:
-                dest = game.move_destination(action, player)
-                if dest is None:
-                    continue
-                game.state.pawns[player] = dest
-                distance = game.shortest_path_length(player)
-                game.state.pawns[player] = original
-                scored.append((distance if distance is not None else 999, action))
-            if scored:
-                best_distance = min(distance for distance, _ in scored)
-                best_actions = [action for distance, action in scored if distance == best_distance]
-                return int(rng.choice(best_actions))
-
-        actions = np.flatnonzero(mask)
-        if len(actions) == 0:
-            raise RuntimeError("No legal opponent actions available")
-        return int(rng.choice(actions))
-
-
-@dataclass(slots=True)
-class MixedOpponent:
-    random_probability: float = 0.5
-    random_opponent: RandomOpponent = field(default_factory=RandomOpponent)
-    greedy_opponent: GreedyOpponent = field(default_factory=GreedyOpponent)
-
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        if rng.random() < self.random_probability:
-            return self.random_opponent.select_action(game, rng)
-        return self.greedy_opponent.select_action(game, rng)
-
-
-@dataclass(slots=True)
-class AntiRushOpponent:
-    fallback: GreedyOpponent = field(default_factory=lambda: GreedyOpponent(wall_probability=0.0))
-    min_path_gain: int = 1
-    wall_bias_distance: int = 5
-    max_self_cost: int = 1
-    wall_probability: float = 1.0
-
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        player = game.state.current_player
-        target = 1 - player
-        if game.state.walls_remaining[player] <= 0 or rng.random() >= self.wall_probability:
-            return self.fallback.select_action(game, rng)
-
-        mask = game.legal_actions_mask()
-        wall_actions = [int(action) for action in np.flatnonzero(mask) if action >= 4]
-        if not wall_actions:
-            return self.fallback.select_action(game, rng)
-
-        current_target_path = game.shortest_path_length(target)
-        current_player_path = game.shortest_path_length(player)
-        if current_target_path is None or current_player_path is None:
-            return self.fallback.select_action(game, rng)
-        if current_target_path > self.wall_bias_distance:
-            return self.fallback.select_action(game, rng)
-
+    def select_action(self, game: Game, state: State, rng: np.random.Generator) -> int:
+        del rng
+        player = state.current_player
+        pawn_actions = [action for action in _legal(game, state) if action < 12]
+        if not pawn_actions:
+            raise AssertionError("reachable state has no legal pawn move")
         scored = []
-        for action in wall_actions:
-            orientation, row, col = decode_wall_action(action)
-            walls = game.state.h_walls if orientation == "h" else game.state.v_walls
-            walls[row, col] = True
-            try:
-                target_path = game.shortest_path_length(target)
-                player_path = game.shortest_path_length(player)
-            finally:
-                walls[row, col] = False
-            if target_path is None or player_path is None:
-                continue
-            target_gain = target_path - current_target_path
-            self_cost = player_path - current_player_path
-            urgency = max(0, self.wall_bias_distance - current_target_path)
-            score = target_gain * 4 - self_cost + urgency
-            if target_gain >= self.min_path_gain and self_cost <= self.max_self_cost:
-                scored.append((score, action))
-
-        if not scored:
-            return self.fallback.select_action(game, rng)
-        best_score = max(score for score, _ in scored)
-        best_actions = [action for score, action in scored if score == best_score]
-        return int(rng.choice(best_actions))
+        for action in pawn_actions:
+            child = game.next_state(state, action)
+            distance = game.shortest_path_distance(child, player)
+            scored.append((WIN_SCORE if distance == 0 else -float(distance), -action, action))
+        return max(scored)[2]
 
 
-@dataclass(slots=True)
-class AntiRushLiteOpponent(AntiRushOpponent):
-    wall_bias_distance: int = 4
-    max_self_cost: int = 0
-    wall_probability: float = 0.45
+@dataclass(frozen=True, slots=True)
+class HeuristicOne:
+    name: str = "heuristic-1"
+
+    def select_action(self, game: Game, state: State, rng: np.random.Generator) -> int:
+        del rng
+        player = state.current_player
+        actions = _legal(game, state)
+        if not actions:
+            raise ValueError("cannot select an action in a terminal state")
+        return max(actions, key=lambda action: (_evaluation(game, game.next_state(state, action), player), -action))
 
 
-@dataclass(slots=True)
-class AntiRushMediumOpponent(AntiRushOpponent):
-    wall_probability: float = 0.70
+@dataclass(frozen=True, slots=True)
+class AlphaBetaOpponent:
+    depth: int
+
+    def __post_init__(self) -> None:
+        if self.depth < 1:
+            raise ValueError("depth must be positive")
+
+    @property
+    def name(self) -> str:
+        return f"alpha-beta-d{self.depth}"
+
+    def select_action(self, game: Game, state: State, rng: np.random.Generator) -> int:
+        del rng
+        root_player = state.current_player
+        actions = _legal(game, state)
+        if not actions:
+            raise ValueError("cannot select an action in a terminal state")
+
+        for action in actions:
+            child = game.next_state(state, action)
+            if game.is_terminal(child) is TerminalStatus.MOVER_LOST:
+                return action
+
+        best_action = actions[0]
+        table: dict[tuple[bytes, int], float] = {}
+        for depth in range(1, self.depth + 1):
+            best_value = -float("inf")
+            ordered = self._ordered_children(game, state, actions, root_player, maximizing=True)
+            for action, child in ordered:
+                value = self._search(
+                    game,
+                    child,
+                    depth - 1,
+                    root_player,
+                    -float("inf"),
+                    float("inf"),
+                    table,
+                )
+                if value > best_value or (value == best_value and action < best_action):
+                    best_value = value
+                    best_action = action
+        return best_action
+
+    def _search(
+        self,
+        game: Game,
+        state: State,
+        depth: int,
+        root_player: int,
+        alpha: float,
+        beta: float,
+        table: dict[tuple[bytes, int], float],
+    ) -> float:
+        if depth == 0 or game.is_terminal(state) is not TerminalStatus.NOT_TERMINAL:
+            return _evaluation(game, state, root_player)
+        key = (state.data, depth)
+        if key in table:
+            return table[key]
+
+        actions = _legal(game, state)
+        maximizing = state.current_player == root_player
+        children = self._ordered_children(game, state, actions, root_player, maximizing)
+        cutoff = False
+        if maximizing:
+            value = -float("inf")
+            for _, child in children:
+                value = max(value, self._search(game, child, depth - 1, root_player, alpha, beta, table))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    cutoff = True
+                    break
+        else:
+            value = float("inf")
+            for _, child in children:
+                value = min(value, self._search(game, child, depth - 1, root_player, alpha, beta, table))
+                beta = min(beta, value)
+                if alpha >= beta:
+                    cutoff = True
+                    break
+        if not cutoff:
+            table[key] = value
+        return value
+
+    @staticmethod
+    def _ordered_children(
+        game: Game,
+        state: State,
+        actions: list[int],
+        root_player: int,
+        maximizing: bool,
+    ) -> list[tuple[int, State]]:
+        children = [(action, game.next_state(state, action)) for action in actions]
+        children.sort(
+            key=lambda item: (_evaluation(game, item[1], root_player), -item[0]),
+            reverse=maximizing,
+        )
+        return children
 
 
-@dataclass(slots=True)
-class CurriculumOpponent:
-    random_weight: float = 0.25
-    greedy_weight: float = 0.70
-    anti_rush_weight: float = 0.0
-    mixed_weight: float = 0.05
-    random_opponent: RandomOpponent = field(default_factory=RandomOpponent)
-    greedy_opponent: GreedyOpponent = field(default_factory=lambda: GreedyOpponent(wall_probability=0.0))
-    anti_rush_opponent: AntiRushOpponent = field(default_factory=AntiRushOpponent)
-    mixed_opponent: MixedOpponent = field(default_factory=MixedOpponent)
-
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        opponents = [self.random_opponent, self.greedy_opponent, self.anti_rush_opponent, self.mixed_opponent]
-        weights = np.array([self.random_weight, self.greedy_weight, self.anti_rush_weight, self.mixed_weight], dtype=np.float64)
-        weights = weights / weights.sum()
-        opponent = opponents[int(rng.choice(len(opponents), p=weights))]
-        return opponent.select_action(game, rng)
-
-
-@dataclass(slots=True)
-class StageTwoCurriculumOpponent(CurriculumOpponent):
-    random_weight: float = 0.15
-    greedy_weight: float = 0.60
-    anti_rush_weight: float = 0.15
-    mixed_weight: float = 0.10
-    anti_rush_opponent: AntiRushLiteOpponent = field(default_factory=AntiRushLiteOpponent)
-
-
-@dataclass(slots=True)
-class StageThreeCurriculumOpponent(CurriculumOpponent):
-    random_weight: float = 0.10
-    greedy_weight: float = 0.55
-    anti_rush_weight: float = 0.20
-    mixed_weight: float = 0.15
-
-
-@dataclass(slots=True)
-class StageThreeGentleCurriculumOpponent(CurriculumOpponent):
-    random_weight: float = 0.15
-    greedy_weight: float = 0.67
-    anti_rush_weight: float = 0.08
-    mixed_weight: float = 0.10
-
-
-@dataclass(slots=True)
-class StageThreeBridgeCurriculumOpponent(CurriculumOpponent):
-    random_weight: float = 0.12
-    greedy_weight: float = 0.58
-    anti_rush_weight: float = 0.20
-    mixed_weight: float = 0.10
-    anti_rush_opponent: AntiRushMediumOpponent = field(default_factory=AntiRushMediumOpponent)
-
-
-@dataclass(slots=True)
-class CheckpointPoolOpponent:
-    models: list = field(default_factory=list)
-    model_paths: list[Path] = field(default_factory=list)
-    deterministic: bool = True
-    _loaded_models: list = field(default_factory=list, init=False)
-
-    @classmethod
-    def from_paths(cls, paths: list[str | Path], deterministic: bool = True) -> "CheckpointPoolOpponent":
-        return cls(model_paths=[Path(path) for path in paths], deterministic=deterministic)
-
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        models = self._models()
-        if not models:
-            raise RuntimeError("CheckpointPoolOpponent requires at least one model or model path")
-        model = models[int(rng.integers(len(models)))]
-        player = game.state.current_player
-        mask = game.legal_actions_mask(canonical=True)
-        action, _ = model.predict(game.observation(canonical=True), deterministic=self.deterministic, action_masks=mask)
-        action = int(action)
-        if not mask[action]:
-            actions = np.flatnonzero(mask)
-            action = int(rng.choice(actions))
-        return canonical_action_to_absolute(action, player)
-
-    def _models(self):
-        if self.models:
-            return self.models
-        if not self._loaded_models and self.model_paths:
-            try:
-                from sb3_contrib import MaskablePPO
-            except ImportError as exc:
-                raise RuntimeError("Install RL dependencies before using checkpoint opponents") from exc
-            self._loaded_models = [MaskablePPO.load(path) for path in self.model_paths]
-        return self._loaded_models
-
-
-@dataclass(slots=True)
-class RefreshingCheckpointPoolOpponent:
-    patterns: list[str] = field(default_factory=list)
-    fallback: OpponentPolicy = field(default_factory=MixedOpponent)
-    deterministic: bool = True
-    checkpoint_probability: float = 1.0
-    max_loaded_models: int = 8
-    refresh_every_calls: int = 25
-    _known_paths: list[Path] = field(default_factory=list, init=False)
-    _model_cache: dict[Path, object] = field(default_factory=dict, init=False)
-    _calls_since_refresh: int = field(default=0, init=False)
-
-    def select_action(self, game: BarricadeGame, rng: np.random.Generator) -> int:
-        paths = self._paths()
-        if not paths or rng.random() >= self.checkpoint_probability:
-            return self.fallback.select_action(game, rng)
-        path = paths[int(rng.integers(len(paths)))]
-        model = self._model(path)
-        player = game.state.current_player
-        mask = game.legal_actions_mask(canonical=True)
-        action, _ = model.predict(game.observation(canonical=True), deterministic=self.deterministic, action_masks=mask)
-        action = int(action)
-        if not mask[action]:
-            actions = np.flatnonzero(mask)
-            action = int(rng.choice(actions))
-        return canonical_action_to_absolute(action, player)
-
-    def _paths(self) -> list[Path]:
-        self._calls_since_refresh += 1
-        if self._calls_since_refresh >= self.refresh_every_calls or not self._known_paths:
-            self.refresh()
-        return self._known_paths
-
-    def refresh(self) -> None:
-        paths: list[Path] = []
-        for pattern in self.patterns:
-            paths.extend(Path(match) for match in glob.glob(pattern))
-        self._known_paths = sorted(set(paths))
-        known = set(self._known_paths)
-        for path in list(self._model_cache):
-            if path not in known:
-                del self._model_cache[path]
-        self._calls_since_refresh = 0
-
-    def _model(self, path: Path):
-        if path in self._model_cache:
-            return self._model_cache[path]
-        try:
-            from sb3_contrib import MaskablePPO
-        except ImportError as exc:
-            raise RuntimeError("Install RL dependencies before using checkpoint opponents") from exc
-        model = MaskablePPO.load(path)
-        self._model_cache[path] = model
-        while len(self._model_cache) > self.max_loaded_models:
-            oldest_path = next(iter(self._model_cache))
-            if oldest_path == path and len(self._model_cache) > 1:
-                oldest_path = next(iter(p for p in self._model_cache if p != path))
-            del self._model_cache[oldest_path]
-        return model
-
-
-def make_opponent(name: str) -> OpponentPolicy:
-    normalized = name.lower().strip()
-    if normalized == "random":
-        return RandomOpponent()
-    if normalized == "greedy":
-        return GreedyOpponent()
-    if normalized == "mixed":
-        return MixedOpponent()
-    if normalized in {"anti_rush", "anti-rush"}:
-        return AntiRushOpponent()
-    if normalized in {"anti_rush_lite", "anti-rush-lite", "lite_anti_rush"}:
-        return AntiRushLiteOpponent()
-    if normalized in {"anti_rush_medium", "anti-rush-medium", "medium_anti_rush"}:
-        return AntiRushMediumOpponent()
-    if normalized in {"curriculum", "balanced"}:
-        return CurriculumOpponent()
-    if normalized in {"curriculum_stage2", "stage2", "anti_rush_curriculum"}:
-        return StageTwoCurriculumOpponent()
-    if normalized in {"curriculum_stage3_bridge", "stage3_bridge", "anti_rush_bridge"}:
-        return StageThreeBridgeCurriculumOpponent()
-    if normalized in {"curriculum_stage3_gentle", "stage3_gentle", "anti_rush_gentle"}:
-        return StageThreeGentleCurriculumOpponent()
-    if normalized in {"curriculum_stage3", "stage3", "anti_rush_plus"}:
-        return StageThreeCurriculumOpponent()
-    raise ValueError(
-        f"Unknown opponent '{name}'. Expected 'random', 'greedy', 'mixed', 'anti_rush_lite', 'anti_rush_medium', 'anti_rush', 'curriculum', 'curriculum_stage2', 'curriculum_stage3_bridge', 'curriculum_stage3_gentle', or 'curriculum_stage3'."
-    )
+FROZEN_LADDER: tuple[OpponentPolicy, ...] = (
+    RandomOpponent(),
+    GreedyRacer(),
+    HeuristicOne(),
+    AlphaBetaOpponent(depth=3),
+    AlphaBetaOpponent(depth=5),
+)

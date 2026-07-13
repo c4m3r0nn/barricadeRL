@@ -1,19 +1,34 @@
-"""Barricade RL environment package."""
+"""AlphaZero-oriented Quoridor engine."""
 
-__all__ = ["BarricadeEnv", "BarricadeSingleAgentEnv", "BarricadeAECEnv"]
+from gymnasium.envs.registration import register, registry
+
+from .game import Game, State, TerminalStatus
+
+ENV_ID = "BarricadeRL/Quoridor-v0"
+
+if ENV_ID not in registry:
+    register(id=ENV_ID, entry_point="barricade_rl.env:QuoridorEnv")
+
+__all__ = [
+    "ENV_ID",
+    "Game",
+    "QuoridorEnv",
+    "SmallBoardSpec",
+    "SmallGame",
+    "SmallState",
+    "SolverOutcome",
+    "State",
+    "TerminalStatus",
+]
 
 
 def __getattr__(name):
-    if name == "BarricadeEnv":
-        from barricade_rl.env import BarricadeEnv
+    if name == "QuoridorEnv":
+        from .env import QuoridorEnv
 
-        return BarricadeEnv
-    if name == "BarricadeSingleAgentEnv":
-        from barricade_rl.single_agent import BarricadeSingleAgentEnv
+        return QuoridorEnv
+    if name in {"SmallBoardSpec", "SmallGame", "SmallState", "SolverOutcome"}:
+        from . import small_board
 
-        return BarricadeSingleAgentEnv
-    if name == "BarricadeAECEnv":
-        from barricade_rl.pettingzoo_env import BarricadeAECEnv
-
-        return BarricadeAECEnv
+        return getattr(small_board, name)
     raise AttributeError(name)

@@ -4,3 +4,6 @@ __pycache__/
 *.egg-info/
 *.py[cod]
 runs/
+artifacts/
+target/
+.DS_Store

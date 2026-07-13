@@ -5,34 +5,29 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "barricade-rl"
 version = "0.1.0"
-description = "Gymnasium environment and playable UI for Barricade"
+description = "Correctness-first Quoridor engine for AlphaZero self-play"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-  "gymnasium>=0.29",
+  "gymnasium>=0.29,<2",
   "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
-rl = [
-  "torch",
-  "stable-baselines3",
-  "sb3-contrib",
-  "tensorboard",
-]
-multiagent = ["pettingzoo>=1.24"]
+dev = ["pyquoridor==0.0.5", "pytest>=8", "torch>=2.7,<3"]
+training = ["torch>=2.7,<3"]
 
 [project.scripts]
-barricade-play = "barricade_rl.ui_tk:main"
 barricade-benchmark = "barricade_rl.benchmark:main"
+barricade-dashboard = "barricade_rl.dashboard:main"
 barricade-evaluate = "barricade_rl.evaluate:main"
-barricade-evaluate-model = "barricade_rl.evaluate:model_main"
-barricade-experiments = "barricade_rl.experiments:main"
-barricade-experiment-ui = "barricade_rl.experiment_ui:main"
-barricade-record-model-game = "barricade_rl.replay:record_model_main"
-barricade-replay-summary = "barricade_rl.replay:main"
-barricade-train-maskable-ppo = "barricade_rl.train_maskable_ppo:main"
+barricade-generate-5x5-oracle = "barricade_rl.oracle5x5:main"
+barricade-gate-az = "barricade_rl.az_gating:main"
+barricade-run-az-cycle = "barricade_rl.az_pipeline:main"
+barricade-training-readiness = "barricade_rl.training_readiness:main"
+barricade-train-az = "barricade_rl.az_learner:main"
+barricade-train-dqn = "barricade_rl.baseline_dqn:main"
+barricade-verify = "barricade_rl.verify:main"
 
 [tool.setuptools.packages.find]
 include = ["barricade_rl*"]

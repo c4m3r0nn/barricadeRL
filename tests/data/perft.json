@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "definition": "perft(0)=1; at depth>0 terminal states contribute 0; otherwise count legal move sequences ending at exactly depth",
+  "positions": [
+    {
+      "name": "initial",
+      "actions": [],
+      "state_key": "000000000000000000000000000000000426aa00",
+      "counts": [131, 16677, 2062264, 247569030]
+    },
+    {
+      "name": "central_race",
+      "actions": [0, 0, 0, 0, 0, 0],
+      "state_key": "000000000000000000000000000000009f18aa06",
+      "counts": [132, 16936, 2111106, 255544324]
+    },
+    {
+      "name": "adjacent_jump",
+      "actions": [0, 0, 0, 0, 0, 0, 0],
+      "state_key": "00000000000000000000000000000000a858aa07",
+      "counts": [132, 16938, 2111842, 255718832]
+    },
+    {
+      "name": "split_barriers",
+      "actions": [39, 39, 0, 0, 53, 121],
+      "state_key": "000000080802000000002000000000008d218806",
+      "counts": [116, 13052, 1423567, 150431157]
+    },
+    {
+      "name": "vertical_channel",
+      "actions": [94, 97, 2, 3, 0, 0, 120, 53],
+      "state_key": "000002000000000000000400003000000e218808",
+      "counts": [117, 13278, 1460699, 155685456]
+    },
+    {
+      "name": "mixed_walls",
+      "actions": [29, 97, 110, 48, 0, 0, 2, 3, 60, 130],
+      "state_key": "000002100000010000400000042000000e21770a",
+      "counts": [109, 11512, 1177130, 116488700]
+    }
+  ]
+}

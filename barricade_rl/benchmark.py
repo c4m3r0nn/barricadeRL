@@ -1,41 +1,37 @@
 from __future__ import annotations
 
 import argparse
-import time
+from time import perf_counter
 
-from barricade_rl.opponents import make_opponent
-from barricade_rl.single_agent import BarricadeSingleAgentEnv
+import numpy as np
 
-
-def run_benchmark(episodes: int, opponent_name: str, seed: int):
-    env = BarricadeSingleAgentEnv(opponent=make_opponent(opponent_name), invalid_action="raise")
-    obs, info = env.reset(seed=seed)
-    steps = 0
-    started = time.perf_counter()
-    for episode in range(episodes):
-        if episode > 0:
-            obs, info = env.reset(seed=seed + episode)
-        terminated = False
-        truncated = False
-        while not (terminated or truncated):
-            mask = env.action_masks()
-            action = int(env.np_random.choice(mask.nonzero()[0]))
-            obs, reward, terminated, truncated, info = env.step(action)
-            steps += 1
-    elapsed = time.perf_counter() - started
-    print(f"episodes={episodes}")
-    print(f"learner_steps={steps}")
-    print(f"seconds={elapsed:.3f}")
-    print(f"learner_steps_per_second={steps / elapsed:.0f}")
+from .game import Game, TerminalStatus
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Benchmark Barricade environment step speed.")
-    parser.add_argument("--episodes", type=int, default=100)
-    parser.add_argument("--opponent", choices=["random", "greedy", "mixed", "anti_rush_lite", "anti_rush_medium", "anti_rush"], default="random")
+def benchmark_random_playout_plies(plies: int = 100_000, seed: int = 0) -> float:
+    game = Game()
+    state = game.initial_state()
+    rng = np.random.default_rng(seed)
+    completed = 0
+    started = perf_counter()
+    while completed < plies:
+        if game.is_terminal(state) is not TerminalStatus.NOT_TERMINAL:
+            state = game.initial_state()
+        legal = np.flatnonzero(game.legal_actions(state))
+        state = game.next_state(state, int(rng.choice(legal)))
+        completed += 1
+    return completed / (perf_counter() - started)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Benchmark the bare rules engine")
+    parser.add_argument("--plies", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
-    run_benchmark(args.episodes, args.opponent, args.seed)
+    throughput = benchmark_random_playout_plies(args.plies, args.seed)
+    print(f"{throughput:,.0f} random-playout plies/second")
+    if throughput < 20_000:
+        raise SystemExit("M0 throughput gate failed: expected at least 20,000 plies/second")
 
 
 if __name__ == "__main__":
