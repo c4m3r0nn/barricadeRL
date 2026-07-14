@@ -106,6 +106,37 @@ def test_fast_search_moves_continue_game_without_entering_replay():
     assert record.samples == ()
 
 
+def test_capped_game_can_be_scored_by_shortest_path_adjudication():
+    class CappedLineGame(LineGame):
+        def is_terminal(self, state):
+            return TerminalStatus.CAPPED if state.ply == 1 else TerminalStatus.NOT_TERMINAL
+
+        def shortest_path_distance(self, state, player):
+            del state
+            return 1 if player == 0 else 3
+
+    config = SelfPlayConfig(
+        full_simulations=1,
+        fast_simulations=1,
+        full_search_probability=1.0,
+        raw_policy_injection_probability=0.0,
+        scoring_scheme="terminal-win-loss-cap-shortest-path-adjudicated",
+    )
+
+    record = play_self_play_game(
+        CappedLineGame(),
+        ZeroEvaluator(),
+        config,
+        rng=np.random.default_rng(2),
+        search_factory=lambda *_: ScriptedSearch(),
+    )
+
+    assert record.terminal_status is TerminalStatus.CAPPED
+    assert record.winner == 0
+    assert record.samples[0].value == 1.0
+    assert record.samples[0].scoring_scheme == config.scoring_scheme
+
+
 @dataclass(frozen=True)
 class LineState:
     ply: int = 0
@@ -233,6 +264,47 @@ def test_full_and_fast_searches_use_the_required_exploration_settings():
     assert not calls[1].forced_playouts
     assert not calls[1].policy_target_pruning
     assert calls[2].root_noise_fraction == 0.25
+
+
+def test_self_play_game_id_prefix_prevents_cross_cycle_id_collisions():
+    game = LineGame()
+    state = game.initial_state()
+    replay = AlphaZeroReplayBuffer(
+        capacity=16,
+        observation_shape=game.canonical_observation(state).shape,
+        action_count=game.action_count,
+    )
+    config = SelfPlayConfig(
+        full_simulations=1,
+        fast_simulations=1,
+        full_search_probability=1.0,
+        raw_policy_injection_probability=0.0,
+    )
+    kwargs = dict(
+        game=game,
+        evaluator=ZeroEvaluator(),
+        config=config,
+        games=1,
+        replay_buffer=replay,
+        run_id="run",
+        config_hash="hash",
+        git_commit="commit",
+        search_factory=lambda *_: ScriptedSearch(),
+    )
+
+    first = generate_self_play_games(
+        **kwargs,
+        rng=np.random.default_rng(1),
+        game_id_prefix="run-cycle-000000",
+    )
+    second = generate_self_play_games(
+        **kwargs,
+        rng=np.random.default_rng(2),
+        game_id_prefix="run-cycle-000001",
+    )
+
+    assert first[0].game_id != second[0].game_id
+    assert len({sample.game_id for sample in replay.samples}) == 2
 
 
 def test_generate_self_play_games_appends_samples_to_replay():

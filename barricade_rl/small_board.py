@@ -30,7 +30,7 @@ MOVE_DELTAS = (
 class SmallBoardSpec:
     size: int = 5
     walls_per_player: int = 3
-    max_plies: int = 80
+    max_plies: int = 200
 
     def __post_init__(self) -> None:
         if self.size < 3 or self.size % 2 == 0:

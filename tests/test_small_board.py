@@ -22,7 +22,7 @@ def small_state(
     ply=0,
 ):
     return SmallState.from_components(
-        spec=SmallBoardSpec(size=5, walls_per_player=3, max_plies=80),
+        spec=SmallBoardSpec(size=5, walls_per_player=3, max_plies=200),
         pawns=pawns,
         horizontal_walls=horizontal_walls,
         vertical_walls=vertical_walls,

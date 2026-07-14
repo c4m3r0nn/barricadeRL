@@ -34,13 +34,13 @@ def test_training_readiness_passes_with_an_audited_corpus_and_all_training_contr
             pawns=((1, 2), (3, 2)),
             walls_remaining=(0, 0),
             current_player=0,
-            ply=30,
+            ply=80,
         ),
         SmallState.from_components(
             pawns=((2, 1), (3, 3)),
             walls_remaining=(0, 0),
             current_player=1,
-            ply=60,
+            ply=160,
         ),
     )
     corpus = tmp_path / "oracle.jsonl"
@@ -72,4 +72,3 @@ def test_training_readiness_passes_with_an_audited_corpus_and_all_training_contr
     assert "network implementation is missing" not in summary.blockers
     assert "self-play actor implementation is missing" not in summary.blockers
     assert "learner implementation is missing" not in summary.blockers
-

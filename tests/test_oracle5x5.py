@@ -235,13 +235,13 @@ def test_audit_oracle_corpus_accepts_exact_multi_phase_corpus(tmp_path):
             pawns=((1, 2), (3, 2)),
             walls_remaining=(0, 0),
             current_player=0,
-            ply=30,
+            ply=80,
         ),
         SmallState.from_components(
             pawns=((2, 1), (3, 3)),
             walls_remaining=(0, 0),
             current_player=1,
-            ply=60,
+            ply=160,
         ),
     )
     corpus = tmp_path / "audit_pass.jsonl"
@@ -278,10 +278,10 @@ def test_exact_compactor_combines_independent_phase_runs_and_reindexes(tmp_path)
     states = (
         SmallState.from_components(walls_remaining=(0, 0), current_player=0, ply=8),
         SmallState.from_components(
-            pawns=((1, 2), (3, 2)), walls_remaining=(0, 0), current_player=0, ply=36
+            pawns=((1, 2), (3, 2)), walls_remaining=(0, 0), current_player=0, ply=100
         ),
         SmallState.from_components(
-            pawns=((2, 1), (3, 3)), walls_remaining=(0, 0), current_player=1, ply=64
+            pawns=((2, 1), (3, 3)), walls_remaining=(0, 0), current_player=1, ply=160
         ),
     )
     inputs = []
@@ -296,7 +296,7 @@ def test_exact_compactor_combines_independent_phase_runs_and_reindexes(tmp_path)
     duplicate.write_text(inputs[0].read_text())
     inputs.append(duplicate)
     terminal_state = SmallState.from_components(
-        pawns=((4, 2), (3, 3)), walls_remaining=(0, 0), current_player=1, ply=64
+        pawns=((4, 2), (3, 3)), walls_remaining=(0, 0), current_player=1, ply=160
     )
     terminal_payload = solve_no_wall_endgame(game, terminal_state).to_dict()
     terminal_payload.update(record_index=0, config_hash=config_hash(config))
@@ -353,10 +353,10 @@ def test_cli_compacts_independent_exact_corpora(tmp_path, capsys):
     states = (
         SmallState.from_components(walls_remaining=(0, 0), current_player=0, ply=8),
         SmallState.from_components(
-            pawns=((1, 2), (3, 2)), walls_remaining=(0, 0), current_player=0, ply=36
+            pawns=((1, 2), (3, 2)), walls_remaining=(0, 0), current_player=0, ply=100
         ),
         SmallState.from_components(
-            pawns=((2, 1), (3, 3)), walls_remaining=(0, 0), current_player=1, ply=64
+            pawns=((2, 1), (3, 3)), walls_remaining=(0, 0), current_player=1, ply=160
         ),
     )
     inputs = []

@@ -5,7 +5,7 @@
   "board": {
     "size": 5,
     "walls_per_player": 3,
-    "max_plies": 80
+    "max_plies": 200
   },
   "observation": {
     "version": 1,
@@ -58,6 +58,11 @@
     "resignation": false,
     "full_search_probability": 0.25,
     "fast_search_fraction": 0.25,
+    "cap_adjudication": {
+      "fraction_threshold": 0.05,
+      "consecutive_cycles": 3,
+      "scoring_scheme": "terminal-win-loss-cap-shortest-path-adjudicated"
+    },
     "weak_start_state_diversification": {
       "enabled": true,
       "raw_policy_injection_probability": 0.04,

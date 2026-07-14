@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_m2_config_matches_handover_non_negotiables():
     config = load_config(ROOT / "configs/m2_5x5.json")
 
-    assert config["board"] == {"size": 5, "walls_per_player": 3, "max_plies": 80}
+    assert config["board"] == {"size": 5, "walls_per_player": 3, "max_plies": 200}
     assert config["action_space"]["action_count"] == 44
     assert config["action_space"]["policy_head"] == "flat-board-size-dependent"
     assert config["action_space"]["size_agnostic_policy_head"] is False
@@ -43,6 +43,11 @@ def test_m2_config_matches_handover_non_negotiables():
     assert config["self_play"]["resignation"] is False
     assert config["self_play"]["full_search_probability"] == 0.25
     assert config["self_play"]["fast_search_fraction"] == 0.25
+    assert config["self_play"]["cap_adjudication"] == {
+        "fraction_threshold": 0.05,
+        "consecutive_cycles": 3,
+        "scoring_scheme": "terminal-win-loss-cap-shortest-path-adjudicated",
+    }
     assert config["self_play"]["weak_start_state_diversification"]["enabled"] is True
     assert config["self_play"]["weak_start_state_diversification"]["diversification_plies"] == 8
 

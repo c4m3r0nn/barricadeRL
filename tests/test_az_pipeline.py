@@ -22,7 +22,7 @@ def _tiny_config():
     return config
 
 
-def _coordinator(tmp_path):
+def _coordinator(tmp_path, *, cycle_index=None):
     project_config = _tiny_config()
     game = SmallGame()
     learner = AlphaZeroLearner(
@@ -54,6 +54,7 @@ def _coordinator(tmp_path):
         run_id="run",
         git_commit="commit",
         seed=4,
+        cycle_index=cycle_index,
     )
 
 
@@ -157,4 +158,58 @@ def test_training_cycle_supplies_one_diverse_start_per_colour_pair(tmp_path):
     starts = calls[0]["initial_states"]
     assert len(starts) == coordinator.gating_config.games_per_color
     assert len({coordinator.game.state_key(state) for state in starts}) == len(starts)
-    assert calls[0]["start_seed"] == coordinator.seed
+    assert calls[0]["start_seed"] == coordinator.gating_start_seed
+
+
+def test_consecutive_cycles_have_distinct_seeds_ids_and_artifact_paths(tmp_path):
+    calls = []
+
+    def self_play_runner(game, evaluator, config, *, replay_buffer, games, **kwargs):
+        calls.append(kwargs)
+        return _fake_self_play(
+            game,
+            evaluator,
+            config,
+            replay_buffer=replay_buffer,
+            games=games,
+        )
+
+    first = _coordinator(tmp_path, cycle_index=0)
+    first_result = first.run_cycle(
+        self_play_games=2,
+        learner_steps=1,
+        self_play_runner=self_play_runner,
+        gate_runner=lambda *args, **kwargs: _gate_result(False),
+    )
+    second = _coordinator(tmp_path, cycle_index=1)
+    second_result = second.run_cycle(
+        self_play_games=2,
+        learner_steps=1,
+        self_play_runner=self_play_runner,
+        gate_runner=lambda *args, **kwargs: _gate_result(False),
+    )
+
+    assert first_result.cycle_index == 0
+    assert second_result.cycle_index == 1
+    assert first_result.self_play_seed != second_result.self_play_seed
+    assert calls[0]["game_id_prefix"] != calls[1]["game_id_prefix"]
+    assert first_result.candidate_checkpoint != second_result.candidate_checkpoint
+
+
+def test_three_high_cap_cycles_activate_adjudication_for_the_next_cycle(tmp_path):
+    run_directory = tmp_path / "run"
+    run_directory.mkdir()
+    (run_directory / "cycles.jsonl").write_text(
+        "".join(
+            '{"cycle_index": %d, "self_play_cap_fraction": 0.1}\n' % index
+            for index in range(3)
+        )
+    )
+
+    coordinator = _coordinator(tmp_path, cycle_index=3)
+
+    assert coordinator.adjudication_active
+    assert (
+        coordinator.self_play_config.scoring_scheme
+        == "terminal-win-loss-cap-shortest-path-adjudicated"
+    )

@@ -70,6 +70,11 @@ class SelfPlayConfig:
             raise ValueError("observation_version must be positive")
         if not self.scoring_scheme:
             raise ValueError("scoring_scheme must be non-empty")
+        if self.scoring_scheme not in (
+            "terminal-win-loss-cap-zero",
+            "terminal-win-loss-cap-shortest-path-adjudicated",
+        ):
+            raise ValueError("unsupported self-play scoring scheme")
 
     @classmethod
     def from_project_config(cls, config: Mapping) -> "SelfPlayConfig":
@@ -210,7 +215,15 @@ def play_self_play_game(
         state = game.next_state(state, action)
 
     terminal_status = game.is_terminal(state)
-    winner = 1 - int(state.current_player) if terminal_status is TerminalStatus.MOVER_LOST else None
+    if terminal_status is TerminalStatus.MOVER_LOST:
+        winner = 1 - int(state.current_player)
+    elif (
+        terminal_status is TerminalStatus.CAPPED
+        and config.scoring_scheme == "terminal-win-loss-cap-shortest-path-adjudicated"
+    ):
+        winner = _adjudicated_winner(game, state)
+    else:
+        winner = None
     source = "self-play"
     samples = tuple(
         make_replay_sample(
@@ -265,11 +278,13 @@ def generate_self_play_games(
     rng: RandomSource | None = None,
     initial_state_factory: Callable[[int], object] | None = None,
     search_factory: SearchFactory | None = None,
+    game_id_prefix: str | None = None,
 ) -> tuple[SelfPlayGameRecord, ...]:
     if games < 1:
         raise ValueError("games must be positive")
     rng = rng or np.random.default_rng()
     records: list[SelfPlayGameRecord] = []
+    prefix = run_id if game_id_prefix is None else game_id_prefix
     for index in range(games):
         initial_state = None if initial_state_factory is None else initial_state_factory(index)
         record = play_self_play_game(
@@ -279,7 +294,7 @@ def generate_self_play_games(
             rng=rng,
             initial_state=initial_state,
             search_factory=search_factory,
-            game_id=f"{run_id}-{index:08d}",
+            game_id=f"{prefix}-{index:08d}",
             run_id=run_id,
             config_hash=config_hash,
             git_commit=git_commit,
@@ -306,3 +321,15 @@ def _value_for_player(player: int, winner: int | None) -> float:
     if winner is None:
         return 0.0
     return 1.0 if player == winner else -1.0
+
+
+def _adjudicated_winner(game, state) -> int | None:
+    distances = tuple(game.shortest_path_distance(state, player) for player in (0, 1))
+    if distances[0] is None or distances[1] is None:
+        return None
+    if distances[0] < distances[1]:
+        return 0
+    if distances[1] < distances[0]:
+        return 1
+    # At equal integer distances, the mover owns the half-tempo tie-break.
+    return int(state.current_player)

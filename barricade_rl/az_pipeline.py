@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -28,11 +28,17 @@ from .training_readiness import check_training_readiness
 @dataclass(frozen=True, slots=True)
 class TrainingCycleResult:
     run_id: str
+    cycle_index: int
+    self_play_seed: int
     learner_step: int
     self_play_games: int
     generated_positions: int
     replay_size: int
     samples_per_position: float
+    self_play_cap_fraction: float
+    high_cap_streak: int
+    adjudication_active: bool
+    scoring_scheme: str
     candidate_checkpoint: Path
     incumbent_checkpoint: Path
     promoted: bool
@@ -43,6 +49,32 @@ class TrainingCycleResult:
         payload["candidate_checkpoint"] = str(self.candidate_checkpoint)
         payload["incumbent_checkpoint"] = str(self.incumbent_checkpoint)
         return payload
+
+
+@dataclass(frozen=True, slots=True)
+class CapAdjudicationConfig:
+    fraction_threshold: float = 0.05
+    consecutive_cycles: int = 3
+    scoring_scheme: str = "terminal-win-loss-cap-shortest-path-adjudicated"
+
+    @classmethod
+    def from_project_config(cls, config: Mapping) -> "CapAdjudicationConfig":
+        payload = config.get("self_play", {}).get("cap_adjudication", {})
+        result = cls(
+            fraction_threshold=float(payload.get("fraction_threshold", 0.05)),
+            consecutive_cycles=int(payload.get("consecutive_cycles", 3)),
+            scoring_scheme=str(
+                payload.get(
+                    "scoring_scheme",
+                    "terminal-win-loss-cap-shortest-path-adjudicated",
+                )
+            ),
+        )
+        if not 0.0 <= result.fraction_threshold <= 1.0:
+            raise ValueError("cap adjudication fraction threshold must be in [0, 1]")
+        if result.consecutive_cycles < 1:
+            raise ValueError("cap adjudication consecutive cycles must be positive")
+        return result
 
 
 class AlphaZeroCoordinator:
@@ -65,6 +97,7 @@ class AlphaZeroCoordinator:
         run_id: str,
         git_commit: str,
         seed: int,
+        cycle_index: int | None = None,
     ) -> None:
         if not run_id or not git_commit:
             raise ValueError("run_id and git_commit are required")
@@ -80,14 +113,40 @@ class AlphaZeroCoordinator:
         self.run_id = run_id
         self.git_commit = git_commit
         self.seed = int(seed)
-        self.rng = np.random.default_rng(seed)
+        self.cycle_index = (
+            _next_cycle_index(self.output_directory)
+            if cycle_index is None
+            else int(cycle_index)
+        )
+        if self.cycle_index < 0:
+            raise ValueError("cycle_index must be non-negative")
+        self.self_play_seed = _cycle_seed(self.seed, self.cycle_index, stream=0)
+        self.gating_start_seed = _cycle_seed(self.seed, self.cycle_index, stream=1)
+        self.gating_seed = _cycle_seed(self.seed, self.cycle_index, stream=2)
+        self.rng = np.random.default_rng(self.self_play_seed)
         self.config_hash = calculate_config_hash(project_config)
         self.self_play_config = SelfPlayConfig.from_project_config(project_config)
+        self.cap_adjudication_config = CapAdjudicationConfig.from_project_config(
+            project_config
+        )
+        self.prior_high_cap_streak = _high_cap_streak(
+            self.output_directory,
+            threshold=self.cap_adjudication_config.fraction_threshold,
+        )
+        self.adjudication_active = (
+            self.prior_high_cap_streak
+            >= self.cap_adjudication_config.consecutive_cycles
+        )
+        if self.adjudication_active:
+            self.self_play_config = replace(
+                self.self_play_config,
+                scoring_scheme=self.cap_adjudication_config.scoring_scheme,
+            )
         self.gating_config = GatingConfig.from_project_config(project_config)
         self.gating_start_states = sample_gating_start_states(
             game,
             count=self.gating_config.games_per_color,
-            seed=self.seed,
+            seed=self.gating_start_seed,
             min_plies=self.gating_config.start_min_plies,
             max_plies=self.gating_config.start_max_plies,
         )
@@ -104,7 +163,7 @@ class AlphaZeroCoordinator:
             raise ValueError("self_play_games and learner_steps must be positive")
         incumbent_network = AlphaZeroNetwork.load_checkpoint(self.incumbent_checkpoint)
         positions_before = self.replay_buffer.total_positions_added
-        self_play_runner(
+        self_play_records = self_play_runner(
             self.game,
             incumbent_network,
             self.self_play_config,
@@ -114,6 +173,20 @@ class AlphaZeroCoordinator:
             config_hash=self.config_hash,
             git_commit=self.git_commit,
             rng=self.rng,
+            game_id_prefix=(
+                f"{self.run_id}-cycle-{self.cycle_index:06d}"
+            ),
+        )
+        self_play_cap_fraction = (
+            sum(bool(getattr(record, "capped", False)) for record in self_play_records)
+            / len(self_play_records)
+            if self_play_records
+            else 0.0
+        )
+        high_cap_streak = (
+            self.prior_high_cap_streak + 1
+            if self_play_cap_fraction > self.cap_adjudication_config.fraction_threshold
+            else 0
         )
         generated_positions = self.replay_buffer.total_positions_added - positions_before
         if self.replay_buffer.size < self.learner.config.batch_size:
@@ -128,7 +201,9 @@ class AlphaZeroCoordinator:
         step = self.learner.step
         candidate_directory = self.output_directory / "candidates"
         candidate_directory.mkdir(parents=True, exist_ok=True)
-        candidate_path = candidate_directory / f"candidate-step-{step:09d}.npz"
+        candidate_path = candidate_directory / (
+            f"candidate-cycle-{self.cycle_index:06d}-step-{step:09d}.npz"
+        )
         self.learner.save_checkpoint(
             candidate_path,
             run_id=self.run_id,
@@ -148,20 +223,21 @@ class AlphaZeroCoordinator:
             cpuct=self.gating_config.cpuct,
             name=f"incumbent-{incumbent_network.metadata.get('step', 0)}",
         )
-        gating_seed = int(self.rng.integers(0, np.iinfo(np.int64).max))
         gating_result = gate_runner(
             candidate_policy,
             incumbent_policy,
             game=self.game,
             config=self.gating_config,
-            seed=gating_seed,
+            seed=self.gating_seed,
             initial_states=self.gating_start_states,
-            start_seed=self.seed,
+            start_seed=self.gating_start_seed,
         )
 
         gating_directory = self.output_directory / "gating"
         gating_directory.mkdir(parents=True, exist_ok=True)
-        gating_path = gating_directory / f"gate-step-{step:09d}.json"
+        gating_path = gating_directory / (
+            f"gate-cycle-{self.cycle_index:06d}-step-{step:09d}.json"
+        )
         gating_path.write_text(
             json.dumps(gating_result.to_dict(), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -187,11 +263,17 @@ class AlphaZeroCoordinator:
         self.replay_buffer.save_npz(replay_path)
         result = TrainingCycleResult(
             run_id=self.run_id,
+            cycle_index=self.cycle_index,
+            self_play_seed=self.self_play_seed,
             learner_step=step,
             self_play_games=self_play_games,
             generated_positions=generated_positions,
             replay_size=self.replay_buffer.size,
             samples_per_position=latest_metrics.samples_per_position,
+            self_play_cap_fraction=self_play_cap_fraction,
+            high_cap_streak=high_cap_streak,
+            adjudication_active=self.adjudication_active,
+            scoring_scheme=self.self_play_config.scoring_scheme,
             candidate_checkpoint=candidate_path,
             incumbent_checkpoint=self.incumbent_checkpoint,
             promoted=gating_result.promoted,
@@ -200,6 +282,38 @@ class AlphaZeroCoordinator:
         with (self.output_directory / "cycles.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(result.to_dict(), sort_keys=True) + "\n")
         return result
+
+
+def _cycle_seed(base_seed: int, cycle_index: int, *, stream: int) -> int:
+    sequence = np.random.SeedSequence([int(base_seed), int(cycle_index), int(stream)])
+    return int(sequence.generate_state(1, dtype=np.uint64)[0] % np.iinfo(np.int64).max)
+
+
+def _cycle_records(output_directory: str | Path) -> tuple[dict, ...]:
+    path = Path(output_directory) / "cycles.jsonl"
+    if not path.exists():
+        return ()
+    return tuple(
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+
+def _next_cycle_index(output_directory: str | Path) -> int:
+    records = _cycle_records(output_directory)
+    if not records:
+        return 0
+    return max(int(record.get("cycle_index", index)) for index, record in enumerate(records)) + 1
+
+
+def _high_cap_streak(output_directory: str | Path, *, threshold: float) -> int:
+    streak = 0
+    for record in reversed(_cycle_records(output_directory)):
+        if float(record.get("self_play_cap_fraction", 0.0)) <= threshold:
+            break
+        streak += 1
+    return streak
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

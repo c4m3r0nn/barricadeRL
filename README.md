@@ -26,7 +26,7 @@ The remaining M2 milestone work is:
 
 Latest local test verification (2026-07-14):
 
-- 178 Python tests and 2 Rust tests passed.
+- 182 Python tests and 2 Rust tests passed.
 
 Latest heavy rules verification (2026-07-07):
 
@@ -83,10 +83,11 @@ Implemented:
 - Self-play actor contract with mandatory 25/75 full/fast search randomization, full-search-only replay recording, the 16-ply temperature schedule, weak raw-policy opening diversification, pre-injection target invalidation, final mover-perspective values, and replay-buffer ingestion.
 - PyTorch gradient learner covering the full trunk and all heads, combined policy/value/distance/opponent-policy/L2 loss, momentum SGD, fixed learning-rate drops, on-the-fly mirror augmentation, EMA updates, stale-replay overconsumption protection, resumable momentum checkpoints, and the `barricade-train-az` command.
 - Deterministic checkpoint gate using 100 unique legal prefixes paired with colours swapped (200 noise-free 800-simulation games), promotion at a 0.55 score rate, full start-state audit metadata, permanent gated-checkpoint manifests, and a generic evaluation harness that supports the 5x5 action/wall contract.
-- Correctness-first `barricade-run-az-cycle` coordinator: self-play from the gated incumbent EMA network, replay persistence, bounded learning, candidate checkpointing, gating, promotion archival, and full learner rollback after rejection.
+- Correctness-first `barricade-run-az-cycle` coordinator: persisted cycle indices, independent deterministic seed streams, globally unique game IDs and artifact paths, self-play from the gated incumbent EMA network, replay persistence, bounded learning, candidate checkpointing, gating, promotion archival, and full learner rollback after rejection.
+- Supervisor-compliant 200-ply cap with per-cycle cap telemetry and automatic shortest-path adjudication on the cycle after three consecutive self-play cap fractions exceed 5%; every replay sample records the scoring scheme used.
 - Training-readiness preflight via `barricade-training-readiness`, reporting oracle, replay, MCTS, network, self-play, and learner blockers before any proper training run.
 - Handover compliance tests for M2 config constants, Gymnasium usage, masked softmax call sites, terminal reward/gamma choices, dashboard metrics, and the flat policy-head decision.
-- Local held-out oracle artifact `artifacts/m2/oracle_5x5_exact_5000.jsonl`: 5,000 exact, non-terminal, unique positions, balanced 1,667/1,667/1,666 across opening/midgame/endgame, with a passing strict audit and training-readiness preflight.
+- Local held-out oracle artifact `artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl`: 5,000 exact, non-terminal, unique positions under the 200-ply rules, balanced 1,667/1,667/1,666 across opening/midgame/endgame, with a passing strict audit and training-readiness preflight.
 
 Not yet complete:
 
@@ -180,30 +181,31 @@ Generate independent exact phase pools with enough headroom for terminal-state f
 ```bash
 .venv/bin/barricade-generate-5x5-oracle \
   --config configs/m2_5x5.json \
-  --output artifacts/m2/oracle_scale/opening.jsonl \
-  --positions 2000 \
-  --random-plies 24 \
+  --output artifacts/m2/oracle_200_scale/opening.jsonl \
+  --positions 4200 \
+  --random-plies 64 \
   --method hybrid \
   --sampling random \
   --max-depth 12 \
   --max-nodes 100000 \
   --low-wall-max-remaining 1 \
   --low-wall-max-nodes 500000 \
-  --seed 505
+  --seed 801
 ```
 
-Repeat with `--positions 2500 --random-plies 36 --seed 202` for `midgame.jsonl`, and with `--positions 4500 --random-plies 64 --seed 303` for `endgame.jsonl`. If a long run is sharded, use distinct seeds or the existing `--shard-index` / `--shard-count` protocol; the compactor safely handles colliding source `record_index` values from independent runs.
+Repeat with `--positions 6500 --random-plies 72 --seed 802` for `midgame.jsonl`, with `--positions 10000 --random-plies 136 --seed 803` for `endgame.jsonl`, and with `--positions 3000 --random-plies 136 --seed 804` for `endgame_extra.jsonl`. These near-boundary depths provide opening/midgame/endgame coverage under the 200-ply phase definition, with measured headroom for terminal filtering. If a long run is sharded, use distinct seeds or the existing `--shard-index` / `--shard-count` protocol; the compactor safely handles colliding source `record_index` values from independent runs.
 
 Compact the independent pools into the held-out validation corpus:
 
 ```bash
 .venv/bin/barricade-generate-5x5-oracle \
   --config configs/m2_5x5.json \
-  --output artifacts/m2/oracle_5x5_exact_5000.jsonl \
+  --output artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl \
   --compact-exact-from \
-    artifacts/m2/oracle_scale/opening.jsonl \
-    artifacts/m2/oracle_scale/midgame.jsonl \
-    artifacts/m2/oracle_scale/endgame.jsonl \
+    artifacts/m2/oracle_200_scale/opening.jsonl \
+    artifacts/m2/oracle_200_scale/midgame.jsonl \
+    artifacts/m2/oracle_200_scale/endgame.jsonl \
+    artifacts/m2/oracle_200_scale/endgame_extra.jsonl \
   --compact-records 5000
 ```
 
@@ -212,7 +214,7 @@ Audit it before any proper training run. The 1,600-per-phase floor leaves room f
 ```bash
 .venv/bin/barricade-generate-5x5-oracle \
   --config configs/m2_5x5.json \
-  --audit-corpus artifacts/m2/oracle_5x5_exact_5000.jsonl \
+  --audit-corpus artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl \
   --audit-min-records 5000 \
   --audit-min-exact-fraction 1.0 \
   --audit-min-phase-records 1600
@@ -223,7 +225,7 @@ Then run the full training-readiness preflight:
 ```bash
 .venv/bin/barricade-training-readiness \
   --config configs/m2_5x5.json \
-  --oracle-corpus artifacts/m2/oracle_5x5_exact_5000.jsonl \
+  --oracle-corpus artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl \
   --min-records 5000 \
   --min-exact-fraction 1.0 \
   --min-phase-records 1600
@@ -260,7 +262,7 @@ Run one complete self-play, learner, and gating cycle only after the oracle audi
 ```bash
 .venv/bin/barricade-run-az-cycle \
   --config configs/m2_5x5.json \
-  --oracle-corpus artifacts/m2/oracle_5x5_exact_5000.jsonl \
+  --oracle-corpus artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl \
   --incumbent artifacts/m2/m2-run-001/incumbent-step-000000000.npz \
   --output-directory artifacts/m2/m2-run-001 \
   --self-play-games 128 \
