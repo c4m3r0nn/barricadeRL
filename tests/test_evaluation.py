@@ -18,7 +18,7 @@ from barricade_rl.evaluate import (
 )
 from barricade_rl.game import ACTION_COUNT, Game
 from barricade_rl.opponents import RandomOpponent
-from barricade_rl.small_board import SmallGame
+from barricade_rl.small_board import SmallGame, SmallState
 
 
 class FirstLegalPolicy:
@@ -66,6 +66,46 @@ def test_play_match_balances_colours_and_scores_candidate():
     assert result.draws == 0
     assert result.candidate_score == 1.0
     assert result.score_rate == 0.5
+
+
+def test_play_match_pairs_each_diverse_start_with_colours_swapped():
+    game = SmallGame()
+    starts = (
+        game.next_state(game.initial_state(), 0),
+        SmallState.from_components(
+            pawns=((1, 2), (3, 2)), walls_remaining=(2, 2), current_player=0, ply=8
+        ),
+    )
+
+    result = play_match(
+        ForwardPolicy(),
+        ForwardPolicy(),
+        games_per_color=2,
+        seed=11,
+        game=game,
+        initial_states=starts,
+    )
+
+    expected_keys = tuple(game.state_key(state).hex() for state in starts)
+    assert tuple(record.initial_state_key for record in result.records[:2]) == expected_keys
+    assert tuple(record.initial_state_key for record in result.records[2:]) == expected_keys
+
+
+def test_play_game_reports_plies_from_the_supplied_start_position():
+    game = SmallGame()
+    start = SmallState.from_components(
+        pawns=((3, 2), (4, 4)), walls_remaining=(0, 0), current_player=0, ply=8
+    )
+
+    record = play_game(
+        ForwardPolicy(),
+        ForwardPolicy(),
+        seed=5,
+        game=game,
+        initial_state=start,
+    )
+
+    assert record.plies == 1
 
 
 def test_play_game_supports_m2_small_board_action_and_wall_counts():

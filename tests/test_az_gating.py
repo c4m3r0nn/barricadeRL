@@ -5,6 +5,7 @@ from barricade_rl.az_gating import (
     NetworkMCTSPolicy,
     archive_promoted_checkpoint,
     gate_candidate,
+    sample_gating_start_states,
 )
 from barricade_rl.az_network import AlphaZeroNetwork
 from barricade_rl.config import load_config
@@ -17,8 +18,8 @@ class NamedStub:
         self.name = name
 
 
-def _match(candidate, opponent, *, games_per_color, seed, game, wins):
-    del seed, game
+def _match(candidate, opponent, *, games_per_color, seed, game, wins, initial_states=None):
+    del seed, game, initial_states
     total = 2 * games_per_color
     return MatchResult(
         candidate=candidate.name,
@@ -39,6 +40,8 @@ def test_gating_config_matches_handover():
     assert config.games_per_color == 100
     assert config.promotion_threshold == 0.55
     assert config.evaluation_simulations == 800
+    assert config.start_min_plies == 1
+    assert config.start_max_plies == 16
 
 
 def test_gate_promotes_at_exact_threshold_with_balanced_colours():
@@ -63,6 +66,47 @@ def test_gate_promotes_at_exact_threshold_with_balanced_colours():
     assert result.candidate_wins == 110
     assert calls[0]["games_per_color"] == 100
     assert calls[0]["seed"] == 9
+
+
+def test_diverse_gating_starts_are_deterministic_unique_and_nonterminal():
+    game = SmallGame()
+
+    first = sample_gating_start_states(game, count=100, seed=17)
+    second = sample_gating_start_states(game, count=100, seed=17)
+
+    keys = tuple(game.state_key(state) for state in first)
+    assert keys == tuple(game.state_key(state) for state in second)
+    assert len(set(keys)) == 100
+    assert all(state.ply > 0 for state in first)
+    assert all(game.legal_actions(state).any() for state in first)
+
+
+def test_gate_passes_paired_starts_and_records_their_keys():
+    game = SmallGame()
+    starts = sample_gating_start_states(game, count=2, seed=3)
+    calls = []
+
+    def runner(candidate, opponent, **kwargs):
+        calls.append(kwargs)
+        return _match(candidate, opponent, wins=2, **kwargs)
+
+    result = gate_candidate(
+        NamedStub("candidate"),
+        NamedStub("incumbent"),
+        game=game,
+        config=GatingConfig(games=4, promotion_threshold=0.5, evaluation_simulations=8),
+        seed=9,
+        initial_states=starts,
+        start_seed=3,
+        match_runner=runner,
+    )
+
+    assert calls[0]["initial_states"] == starts
+    assert result.start_positions == 2
+    assert result.start_state_keys == tuple(game.state_key(state).hex() for state in starts)
+    assert result.start_sampling == "paired-random-legal-prefixes-v1"
+    assert result.start_ply_range == (1, 16)
+    assert result.start_seed == 3
 
 
 def test_gate_rejects_candidate_below_threshold():

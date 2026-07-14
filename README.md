@@ -24,9 +24,9 @@ The remaining M2 milestone work is:
 
 - Run proper self-play training, checkpoint gating, and the M2 acceptance evaluations against the exact validation corpus.
 
-Latest local test verification (2026-07-13):
+Latest local test verification (2026-07-14):
 
-- 173 Python tests and 2 Rust tests passed.
+- 178 Python tests and 2 Rust tests passed.
 
 Latest heavy rules verification (2026-07-07):
 
@@ -82,7 +82,7 @@ Implemented:
 - Versioned AlphaZero replay sample/buffer contract with policy-mask validation, value bounds, shortest-path and following-ply opponent-policy targets, run/config/git provenance, game and scoring metadata, true gradient-samples-per-generated-position accounting, batch sampling, and NPZ persistence.
 - Self-play actor contract with mandatory 25/75 full/fast search randomization, full-search-only replay recording, the 16-ply temperature schedule, weak raw-policy opening diversification, pre-injection target invalidation, final mover-perspective values, and replay-buffer ingestion.
 - PyTorch gradient learner covering the full trunk and all heads, combined policy/value/distance/opponent-policy/L2 loss, momentum SGD, fixed learning-rate drops, on-the-fly mirror augmentation, EMA updates, stale-replay overconsumption protection, resumable momentum checkpoints, and the `barricade-train-az` command.
-- Deterministic checkpoint gate using 200 colour-balanced, noise-free 800-simulation games, promotion at a 0.55 score rate, permanent gated-checkpoint manifests, and a generic evaluation harness that now supports the 5x5 action/wall contract.
+- Deterministic checkpoint gate using 100 unique legal prefixes paired with colours swapped (200 noise-free 800-simulation games), promotion at a 0.55 score rate, full start-state audit metadata, permanent gated-checkpoint manifests, and a generic evaluation harness that supports the 5x5 action/wall contract.
 - Correctness-first `barricade-run-az-cycle` coordinator: self-play from the gated incumbent EMA network, replay persistence, bounded learning, candidate checkpointing, gating, promotion archival, and full learner rollback after rejection.
 - Training-readiness preflight via `barricade-training-readiness`, reporting oracle, replay, MCTS, network, self-play, and learner blockers before any proper training run.
 - Handover compliance tests for M2 config constants, Gymnasium usage, masked softmax call sites, terminal reward/gamma choices, dashboard metrics, and the flat policy-head decision.

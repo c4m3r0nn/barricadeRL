@@ -13,6 +13,7 @@ from .az_network import AlphaZeroNetwork
 from .config import config_hash as calculate_config_hash
 from .config import load_config, small_game_from_config
 from .evaluate import MatchResult, play_match
+from .game import TerminalStatus
 from .mcts import MCTS, MCTSConfig
 
 
@@ -22,6 +23,8 @@ class GatingConfig:
     promotion_threshold: float = 0.55
     evaluation_simulations: int = 800
     cpuct: float = 1.6
+    start_min_plies: int = 1
+    start_max_plies: int = 16
 
     def __post_init__(self) -> None:
         if self.games < 2 or self.games % 2:
@@ -32,6 +35,8 @@ class GatingConfig:
             raise ValueError("evaluation_simulations must be positive")
         if self.cpuct <= 0:
             raise ValueError("cpuct must be positive")
+        if self.start_min_plies < 1 or self.start_max_plies < self.start_min_plies:
+            raise ValueError("gating start plies must satisfy 1 <= minimum <= maximum")
 
     @property
     def games_per_color(self) -> int:
@@ -48,6 +53,8 @@ class GatingConfig:
             promotion_threshold=float(gating["promotion_threshold"]),
             evaluation_simulations=int(mcts["evaluation_simulations"]),
             cpuct=float(mcts["cpuct_init"]),
+            start_min_plies=1,
+            start_max_plies=int(mcts["temperature_moves"]),
         )
 
 
@@ -67,6 +74,11 @@ class GatingResult:
     seed: int
     avg_plies: float
     cap_fraction: float
+    start_positions: int
+    start_state_keys: tuple[str, ...]
+    start_sampling: str
+    start_ply_range: tuple[int, int]
+    start_seed: int
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -100,6 +112,49 @@ class NetworkMCTSPolicy:
 MatchRunner = Callable[..., MatchResult]
 
 
+def sample_gating_start_states(
+    game,
+    *,
+    count: int,
+    seed: int,
+    min_plies: int = 1,
+    max_plies: int = 16,
+) -> tuple:
+    """Sample a reproducible suite of unique, non-terminal legal prefixes."""
+    if count < 1:
+        raise ValueError("gating start count must be positive")
+    if min_plies < 1 or max_plies < min_plies:
+        raise ValueError("gating start plies must satisfy 1 <= min_plies <= max_plies")
+    rng = np.random.default_rng(seed)
+    starts: list = []
+    seen: set[bytes] = set()
+    attempts = 0
+    max_attempts = count * 100
+    while len(starts) < count and attempts < max_attempts:
+        attempts += 1
+        state = game.initial_state()
+        target_plies = int(rng.integers(min_plies, max_plies + 1))
+        for _ in range(target_plies):
+            if game.is_terminal(state) is not TerminalStatus.NOT_TERMINAL:
+                break
+            legal = np.flatnonzero(game.legal_actions(state))
+            if not legal.size:
+                break
+            state = game.next_state(state, int(rng.choice(legal)))
+        if game.is_terminal(state) is not TerminalStatus.NOT_TERMINAL:
+            continue
+        key = game.state_key(state)
+        if key in seen:
+            continue
+        seen.add(key)
+        starts.append(state)
+    if len(starts) != count:
+        raise RuntimeError(
+            f"could only sample {len(starts)} unique gating starts after {attempts} attempts"
+        )
+    return tuple(starts)
+
+
 def gate_candidate(
     candidate,
     incumbent,
@@ -107,14 +162,31 @@ def gate_candidate(
     game,
     config: GatingConfig,
     seed: int,
+    initial_states: Sequence | None = None,
+    start_seed: int | None = None,
     match_runner: MatchRunner = play_match,
 ) -> GatingResult:
+    resolved_start_seed = int(seed if start_seed is None else start_seed)
+    starts = (
+        sample_gating_start_states(
+            game,
+            count=config.games_per_color,
+            seed=resolved_start_seed,
+            min_plies=config.start_min_plies,
+            max_plies=config.start_max_plies,
+        )
+        if initial_states is None
+        else tuple(initial_states)
+    )
+    if len(starts) != config.games_per_color:
+        raise ValueError("gating requires exactly one start state per colour pair")
     match = match_runner(
         candidate,
         incumbent,
         games_per_color=config.games_per_color,
         seed=seed,
         game=game,
+        initial_states=starts,
     )
     if match.games != config.games:
         raise RuntimeError(
@@ -136,6 +208,11 @@ def gate_candidate(
         seed=int(seed),
         avg_plies=match.avg_plies,
         cap_fraction=match.cap_fraction,
+        start_positions=len(starts),
+        start_state_keys=tuple(game.state_key(state).hex() for state in starts),
+        start_sampling="paired-random-legal-prefixes-v1",
+        start_ply_range=(config.start_min_plies, config.start_max_plies),
+        start_seed=resolved_start_seed,
     )
 
 

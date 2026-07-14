@@ -92,6 +92,11 @@ def _gate_result(promoted):
         seed=4,
         avg_plies=10.0,
         cap_fraction=0.0,
+        start_positions=100,
+        start_state_keys=tuple(f"state-{index}" for index in range(100)),
+        start_sampling="paired-random-legal-prefixes-v1",
+        start_ply_range=(1, 16),
+        start_seed=4,
     )
 
 
@@ -131,3 +136,25 @@ def test_training_cycle_rejection_rolls_learner_back_to_incumbent(tmp_path):
     assert coordinator.learner.step == 0
     assert coordinator.incumbent_checkpoint == original_incumbent
     assert result.candidate_checkpoint.is_file()
+
+
+def test_training_cycle_supplies_one_diverse_start_per_colour_pair(tmp_path):
+    coordinator = _coordinator(tmp_path)
+    calls = []
+
+    def gate_runner(*args, **kwargs):
+        del args
+        calls.append(kwargs)
+        return _gate_result(False)
+
+    coordinator.run_cycle(
+        self_play_games=2,
+        learner_steps=1,
+        self_play_runner=_fake_self_play,
+        gate_runner=gate_runner,
+    )
+
+    starts = calls[0]["initial_states"]
+    assert len(starts) == coordinator.gating_config.games_per_color
+    assert len({coordinator.game.state_key(state) for state in starts}) == len(starts)
+    assert calls[0]["start_seed"] == coordinator.seed

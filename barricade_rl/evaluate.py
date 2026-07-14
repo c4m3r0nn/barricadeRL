@@ -37,6 +37,7 @@ class NamedPolicy:
 class GameRecord:
     player0: str
     player1: str
+    initial_state_key: str
     seed: int | None
     winner: int | None
     termination: str
@@ -49,6 +50,7 @@ class GameRecord:
         return {
             "player0": self.player0,
             "player1": self.player1,
+            "initial_state_key": self.initial_state_key,
             "seed": self.seed,
             "winner": self.winner,
             "termination": self.termination,
@@ -174,12 +176,15 @@ def play_game(
     *,
     seed: int | None = None,
     game: Game | None = None,
+    initial_state=None,
 ) -> GameRecord:
     game = game or Game()
     policies = (player0, player1)
     names = (_policy_name(player0), _policy_name(player1))
     rng = np.random.default_rng(seed)
-    state = game.initial_state()
+    state = game.initial_state() if initial_state is None else initial_state
+    initial_state_key = game.state_key(state).hex()
+    starting_ply = int(state.ply)
     actions: list[int] = []
 
     while game.is_terminal(state) is TerminalStatus.NOT_TERMINAL:
@@ -206,10 +211,11 @@ def play_game(
     return GameRecord(
         player0=names[0],
         player1=names[1],
+        initial_state_key=initial_state_key,
         seed=seed,
         winner=winner,
         termination=termination,
-        plies=state.ply,
+        plies=int(state.ply) - starting_ply,
         actions=tuple(actions),
         final_state_key=game.state_key(state).hex(),
         walls_placed=(
@@ -226,10 +232,13 @@ def play_match(
     games_per_color: int,
     seed: int | None = None,
     game: Game | None = None,
+    initial_states: Sequence | None = None,
 ) -> MatchResult:
     if games_per_color < 1:
         raise ValueError("games_per_color must be positive")
     game = game or Game()
+    if initial_states is not None and len(initial_states) != games_per_color:
+        raise ValueError("initial_states must contain exactly one state per colour pair")
     master_rng = np.random.default_rng(seed)
     candidate_name = _policy_name(candidate)
     opponent_name = _policy_name(opponent)
@@ -239,12 +248,25 @@ def play_match(
     records: list[GameRecord] = []
 
     for candidate_player in (0, 1):
-        for _ in range(games_per_color):
+        for game_index in range(games_per_color):
             game_seed = int(master_rng.integers(0, np.iinfo(np.int64).max))
+            initial_state = None if initial_states is None else initial_states[game_index]
             if candidate_player == 0:
-                record = play_game(candidate, opponent, seed=game_seed, game=game)
+                record = play_game(
+                    candidate,
+                    opponent,
+                    seed=game_seed,
+                    game=game,
+                    initial_state=initial_state,
+                )
             else:
-                record = play_game(opponent, candidate, seed=game_seed, game=game)
+                record = play_game(
+                    opponent,
+                    candidate,
+                    seed=game_seed,
+                    game=game,
+                    initial_state=initial_state,
+                )
             records.append(record)
             if record.winner is None:
                 draws += 1

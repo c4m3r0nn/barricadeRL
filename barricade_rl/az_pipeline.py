@@ -14,6 +14,7 @@ from .az_gating import (
     NetworkMCTSPolicy,
     archive_promoted_checkpoint,
     gate_candidate,
+    sample_gating_start_states,
 )
 from .az_learner import AlphaZeroLearner
 from .az_network import AlphaZeroNetwork
@@ -83,6 +84,13 @@ class AlphaZeroCoordinator:
         self.config_hash = calculate_config_hash(project_config)
         self.self_play_config = SelfPlayConfig.from_project_config(project_config)
         self.gating_config = GatingConfig.from_project_config(project_config)
+        self.gating_start_states = sample_gating_start_states(
+            game,
+            count=self.gating_config.games_per_color,
+            seed=self.seed,
+            min_plies=self.gating_config.start_min_plies,
+            max_plies=self.gating_config.start_max_plies,
+        )
 
     def run_cycle(
         self,
@@ -147,6 +155,8 @@ class AlphaZeroCoordinator:
             game=self.game,
             config=self.gating_config,
             seed=gating_seed,
+            initial_states=self.gating_start_states,
+            start_seed=self.seed,
         )
 
         gating_directory = self.output_directory / "gating"
