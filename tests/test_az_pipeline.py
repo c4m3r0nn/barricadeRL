@@ -245,3 +245,33 @@ def test_three_high_cap_cycles_activate_adjudication_for_the_next_cycle(tmp_path
         coordinator.self_play_config.scoring_scheme
         == "terminal-win-loss-cap-shortest-path-adjudicated"
     )
+
+
+def test_adjudication_stays_active_after_cap_fraction_recovers(tmp_path):
+    run_directory = tmp_path / "run"
+    run_directory.mkdir()
+    (run_directory / "cycles.jsonl").write_text(
+        "".join(
+            [
+                '{"cycle_index": 0, "self_play_cap_fraction": 0.1, '
+                '"adjudication_active": false}\n',
+                '{"cycle_index": 1, "self_play_cap_fraction": 0.1, '
+                '"adjudication_active": false}\n',
+                '{"cycle_index": 2, "self_play_cap_fraction": 0.1, '
+                '"adjudication_active": false}\n',
+                '{"cycle_index": 3, "self_play_cap_fraction": 0.0, '
+                '"adjudication_active": true, '
+                '"scoring_scheme": '
+                '"terminal-win-loss-cap-shortest-path-adjudicated"}\n',
+            ]
+        )
+    )
+
+    coordinator = _coordinator(tmp_path, cycle_index=4)
+
+    assert coordinator.prior_high_cap_streak == 0
+    assert coordinator.adjudication_active
+    assert (
+        coordinator.self_play_config.scoring_scheme
+        == "terminal-win-loss-cap-shortest-path-adjudicated"
+    )

@@ -143,7 +143,11 @@ class AlphaZeroCoordinator:
             threshold=self.cap_adjudication_config.fraction_threshold,
         )
         self.adjudication_active = (
-            self.prior_high_cap_streak
+            _adjudication_was_activated(
+                self.output_directory,
+                scoring_scheme=self.cap_adjudication_config.scoring_scheme,
+            )
+            or self.prior_high_cap_streak
             >= self.cap_adjudication_config.consecutive_cycles
         )
         if self.adjudication_active:
@@ -319,6 +323,18 @@ def _high_cap_streak(output_directory: str | Path, *, threshold: float) -> int:
             break
         streak += 1
     return streak
+
+
+def _adjudication_was_activated(
+    output_directory: str | Path,
+    *,
+    scoring_scheme: str,
+) -> bool:
+    return any(
+        bool(record.get("adjudication_active", False))
+        or record.get("scoring_scheme") == scoring_scheme
+        for record in _cycle_records(output_directory)
+    )
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:

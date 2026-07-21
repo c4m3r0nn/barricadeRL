@@ -26,7 +26,7 @@ The remaining M2 milestone work is:
 
 Latest local test verification (2026-07-14):
 
-- 183 Python tests and 2 Rust tests passed.
+- 184 Python tests and 2 Rust tests passed.
 
 Latest heavy rules verification (2026-07-07):
 
@@ -84,7 +84,7 @@ Implemented:
 - PyTorch gradient learner covering the full trunk and all heads, combined policy/value/distance/opponent-policy/L2 loss, momentum SGD, fixed learning-rate drops, on-the-fly mirror augmentation, EMA updates, stale-replay overconsumption protection, resumable momentum checkpoints, and the `barricade-train-az` command.
 - Deterministic checkpoint gate using 100 unique legal prefixes paired with colours swapped (200 noise-free 800-simulation games), promotion at a 0.55 score rate, full start-state audit metadata, permanent gated-checkpoint manifests, and a generic evaluation harness that supports the 5x5 action/wall contract.
 - Correctness-first `barricade-run-az-cycle` coordinator: persisted cycle indices, independent deterministic seed streams, globally unique game IDs and artifact paths, self-play from the gated incumbent EMA network, replay persistence, bounded continuous learning, candidate checkpointing, gating, and promotion archival. Rejection leaves the self-play incumbent unchanged without discarding learner weights, momentum, EMA, step, or RNG state. Cycle records include the final-step policy, value, auxiliary, opponent-policy and L2 losses, root-policy entropy, learning rate, and replay-consumption ratio.
-- Supervisor-compliant 200-ply cap with per-cycle cap telemetry and automatic shortest-path adjudication on the cycle after three consecutive self-play cap fractions exceed 5%; every replay sample records the scoring scheme used.
+- Supervisor-compliant 200-ply cap with per-cycle cap telemetry and a run-latched automatic shortest-path adjudication switch on the cycle after three consecutive self-play cap fractions exceed 5%; every replay sample records the scoring scheme used.
 - Training-readiness preflight via `barricade-training-readiness`, reporting oracle, replay, MCTS, network, self-play, and learner blockers before any proper training run.
 - Handover compliance tests for M2 config constants, Gymnasium usage, masked softmax call sites, terminal reward/gamma choices, dashboard metrics, and the flat policy-head decision.
 - Local held-out oracle artifact `artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl`: 5,000 exact, non-terminal, unique positions under the 200-ply rules, balanced 1,667/1,667/1,666 across opening/midgame/endgame, with a passing strict audit and training-readiness preflight.
