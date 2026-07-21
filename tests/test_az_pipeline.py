@@ -5,7 +5,7 @@ import numpy as np
 from barricade_rl.az_gating import GatingResult
 from barricade_rl.az_learner import AlphaZeroLearner, LearnerConfig
 from barricade_rl.az_network import AlphaZeroNetwork
-from barricade_rl.az_pipeline import AlphaZeroCoordinator
+from barricade_rl.az_pipeline import AlphaZeroCoordinator, _parse_args
 from barricade_rl.az_replay import AlphaZeroReplayBuffer, make_replay_sample
 from barricade_rl.config import config_hash, load_config
 from barricade_rl.small_board import SmallGame
@@ -114,6 +114,11 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert result.promoted
     assert result.learner_step == 1
     assert result.generated_positions == 2
+    assert result.learner_metrics["step"] == 1
+    assert result.learner_metrics["policy_loss"] >= 0.0
+    assert result.learner_metrics["value_loss"] >= 0.0
+    assert result.learner_metrics["auxiliary_loss"] >= 0.0
+    assert result.learner_metrics["root_policy_entropy"] >= 0.0
     assert result.candidate_checkpoint.is_file()
     assert result.incumbent_checkpoint.is_file()
     assert result.incumbent_checkpoint.parent.name == "gated"
@@ -121,7 +126,7 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert (tmp_path / "run" / "replay.npz").is_file()
 
 
-def test_training_cycle_rejection_rolls_learner_back_to_incumbent(tmp_path):
+def test_training_cycle_rejection_keeps_continuous_learner_and_gated_incumbent(tmp_path):
     coordinator = _coordinator(tmp_path)
     original_incumbent = coordinator.incumbent_checkpoint
 
@@ -134,9 +139,36 @@ def test_training_cycle_rejection_rolls_learner_back_to_incumbent(tmp_path):
 
     assert not result.promoted
     assert result.learner_step == 1
-    assert coordinator.learner.step == 0
+    assert coordinator.learner.step == 1
     assert coordinator.incumbent_checkpoint == original_incumbent
     assert result.candidate_checkpoint.is_file()
+
+
+def test_cycle_cli_accepts_separate_continuous_learner_checkpoint(tmp_path):
+    learner_checkpoint = tmp_path / "candidate.npz"
+
+    args = _parse_args(
+        [
+            "--oracle-corpus",
+            str(tmp_path / "oracle.jsonl"),
+            "--incumbent",
+            str(tmp_path / "incumbent.npz"),
+            "--learner-checkpoint",
+            str(learner_checkpoint),
+            "--output-directory",
+            str(tmp_path / "run"),
+            "--self-play-games",
+            "2",
+            "--learner-steps",
+            "1",
+            "--run-id",
+            "run",
+            "--git-commit",
+            "commit",
+        ]
+    )
+
+    assert args.learner_checkpoint == learner_checkpoint
 
 
 def test_training_cycle_supplies_one_diverse_start_per_colour_pair(tmp_path):

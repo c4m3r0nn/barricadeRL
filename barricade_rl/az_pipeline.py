@@ -35,10 +35,12 @@ class TrainingCycleResult:
     generated_positions: int
     replay_size: int
     samples_per_position: float
+    learner_metrics: dict[str, int | float]
     self_play_cap_fraction: float
     high_cap_streak: int
     adjudication_active: bool
     scoring_scheme: str
+    learner_input_checkpoint: Path
     candidate_checkpoint: Path
     incumbent_checkpoint: Path
     promoted: bool
@@ -46,6 +48,7 @@ class TrainingCycleResult:
 
     def to_dict(self) -> dict:
         payload = asdict(self)
+        payload["learner_input_checkpoint"] = str(self.learner_input_checkpoint)
         payload["candidate_checkpoint"] = str(self.candidate_checkpoint)
         payload["incumbent_checkpoint"] = str(self.incumbent_checkpoint)
         return payload
@@ -78,7 +81,7 @@ class CapAdjudicationConfig:
 
 
 class AlphaZeroCoordinator:
-    """Synchronous M2 cycle with gated rollback semantics.
+    """Synchronous M2 cycle with a continuous learner and gated self-play.
 
     This is the correctness-first local coordinator. The later inference-server
     deployment can replace its runners without changing replay, learner, or gate
@@ -91,6 +94,7 @@ class AlphaZeroCoordinator:
         project_config: Mapping,
         game,
         learner: AlphaZeroLearner,
+        learner_checkpoint: str | Path | None = None,
         replay_buffer: AlphaZeroReplayBuffer,
         incumbent_checkpoint: str | Path,
         output_directory: str | Path,
@@ -107,6 +111,11 @@ class AlphaZeroCoordinator:
         self.project_config = dict(project_config)
         self.game = game
         self.learner = learner
+        self.learner_checkpoint = (
+            incumbent if learner_checkpoint is None else Path(learner_checkpoint)
+        )
+        if not self.learner_checkpoint.is_file():
+            raise FileNotFoundError(self.learner_checkpoint)
         self.replay_buffer = replay_buffer
         self.incumbent_checkpoint = incumbent
         self.output_directory = Path(output_directory)
@@ -252,12 +261,6 @@ class AlphaZeroCoordinator:
                 config_hash=self.config_hash,
                 step=step,
             )
-        else:
-            self.learner = AlphaZeroLearner.load_checkpoint(
-                self.incumbent_checkpoint,
-                self.game,
-                device=self.learner.device,
-            )
 
         replay_path = self.output_directory / "replay.npz"
         self.replay_buffer.save_npz(replay_path)
@@ -270,10 +273,12 @@ class AlphaZeroCoordinator:
             generated_positions=generated_positions,
             replay_size=self.replay_buffer.size,
             samples_per_position=latest_metrics.samples_per_position,
+            learner_metrics=latest_metrics.to_dict(),
             self_play_cap_fraction=self_play_cap_fraction,
             high_cap_streak=high_cap_streak,
             adjudication_active=self.adjudication_active,
             scoring_scheme=self.self_play_config.scoring_scheme,
+            learner_input_checkpoint=self.learner_checkpoint,
             candidate_checkpoint=candidate_path,
             incumbent_checkpoint=self.incumbent_checkpoint,
             promoted=gating_result.promoted,
@@ -321,6 +326,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=Path("configs/m2_5x5.json"))
     parser.add_argument("--oracle-corpus", type=Path, required=True)
     parser.add_argument("--incumbent", type=Path, required=True)
+    parser.add_argument("--learner-checkpoint", type=Path, default=None)
     parser.add_argument("--replay", type=Path, default=None)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--self-play-games", type=int, required=True)
@@ -342,7 +348,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise RuntimeError("training readiness failed: " + "; ".join(readiness.blockers))
     project_config = load_config(args.config)
     game = small_game_from_config(project_config)
-    learner = AlphaZeroLearner.load_checkpoint(args.incumbent, game, device=args.device)
+    learner_checkpoint = args.learner_checkpoint or args.incumbent
+    learner = AlphaZeroLearner.load_checkpoint(
+        learner_checkpoint,
+        game,
+        device=args.device,
+    )
     if args.replay is not None and args.replay.exists():
         replay = AlphaZeroReplayBuffer.load_npz(args.replay)
     else:
@@ -356,6 +367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         project_config=project_config,
         game=game,
         learner=learner,
+        learner_checkpoint=learner_checkpoint,
         replay_buffer=replay,
         incumbent_checkpoint=args.incumbent,
         output_directory=args.output_directory,
