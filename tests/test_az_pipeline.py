@@ -112,6 +112,9 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     )
 
     assert result.promoted
+    assert result.requested_learner_steps == 1
+    assert result.completed_learner_steps == 1
+    assert not result.learner_steps_clamped
     assert result.learner_step == 1
     assert result.generated_positions == 2
     assert result.learner_metrics["step"] == 1
@@ -124,6 +127,23 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert result.incumbent_checkpoint.parent.name == "gated"
     assert coordinator.incumbent_checkpoint == result.incumbent_checkpoint
     assert (tmp_path / "run" / "replay.npz").is_file()
+
+
+def test_training_cycle_clamps_steps_to_replay_consumption_limit(tmp_path):
+    coordinator = _coordinator(tmp_path)
+
+    result = coordinator.run_cycle(
+        self_play_games=2,
+        learner_steps=5,
+        self_play_runner=_fake_self_play,
+        gate_runner=lambda *args, **kwargs: _gate_result(False),
+    )
+
+    assert result.requested_learner_steps == 5
+    assert result.completed_learner_steps == 4
+    assert result.learner_steps_clamped
+    assert result.learner_step == 4
+    assert result.samples_per_position == 4.0
 
 
 def test_training_cycle_rejection_keeps_continuous_learner_and_gated_incumbent(tmp_path):

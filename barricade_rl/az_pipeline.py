@@ -31,6 +31,9 @@ class TrainingCycleResult:
     cycle_index: int
     self_play_seed: int
     learner_step: int
+    requested_learner_steps: int
+    completed_learner_steps: int
+    learner_steps_clamped: bool
     self_play_games: int
     generated_positions: int
     replay_size: int
@@ -207,9 +210,23 @@ class AlphaZeroCoordinator:
                 "self-play did not produce enough recorded positions for one learner batch"
             )
 
+        remaining_gradient_samples = (
+            self.learner.config.target_samples_per_position_max
+            * self.replay_buffer.total_positions_added
+            - self.replay_buffer.gradient_samples_consumed
+        )
+        maximum_learner_steps = max(
+            0,
+            int(remaining_gradient_samples // self.learner.config.batch_size),
+        )
+        completed_learner_steps = min(learner_steps, maximum_learner_steps)
+        if completed_learner_steps < 1:
+            raise RuntimeError(
+                "self-play did not create enough replay headroom for one learner step"
+            )
         latest_metrics = self.learner.train(
             self.replay_buffer,
-            steps=learner_steps,
+            steps=completed_learner_steps,
         )
         step = self.learner.step
         candidate_directory = self.output_directory / "candidates"
@@ -273,6 +290,9 @@ class AlphaZeroCoordinator:
             cycle_index=self.cycle_index,
             self_play_seed=self.self_play_seed,
             learner_step=step,
+            requested_learner_steps=learner_steps,
+            completed_learner_steps=completed_learner_steps,
+            learner_steps_clamped=completed_learner_steps < learner_steps,
             self_play_games=self_play_games,
             generated_positions=generated_positions,
             replay_size=self.replay_buffer.size,
