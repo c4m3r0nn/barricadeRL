@@ -24,9 +24,9 @@ The remaining M2 milestone work is:
 
 - Run proper self-play training, checkpoint gating, and the M2 acceptance evaluations against the exact validation corpus.
 
-Latest local test verification (2026-07-14):
+Latest local test verification (2026-07-26):
 
-- 185 Python tests and 2 Rust tests passed.
+- 189 Python tests and 2 Rust tests passed.
 
 Latest heavy rules verification (2026-07-07):
 
@@ -88,6 +88,13 @@ Implemented:
 - Training-readiness preflight via `barricade-training-readiness`, reporting oracle, replay, MCTS, network, self-play, and learner blockers before any proper training run.
 - Handover compliance tests for M2 config constants, Gymnasium usage, masked softmax call sites, terminal reward/gamma choices, dashboard metrics, and the flat policy-head decision.
 - Local held-out oracle artifact `artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl`: 5,000 exact, non-terminal, unique positions under the 200-ply rules, balanced 1,667/1,667/1,666 across opening/midgame/endgame, with a passing strict audit and training-readiness preflight.
+- Read-only Apple Silicon benchmark harness covering NumPy and PyTorch CPU/MPS inference parity and throughput, learner cold/steady-state timing, and deterministic multi-process MCTS scaling. It hashes the checkpoint and replay before and after the run to prove that benchmark inputs were not modified.
+
+Latest local M2 training result (2026-07-26):
+
+- Cycle 11 promoted learner step 186 over gated step 86: 104 candidate wins, 73 incumbent wins, and 23 draws over 200 paired games, for a 0.5775 score rate against the 0.55 promotion threshold.
+- The new local gated checkpoint is `artifacts/m2/m2-run-002/gated/gated-step-000000186.npz`.
+- This is a meaningful training promotion, not M2 completion. The supervisor's separate 99% held-out value-sign and 800-simulation solver-move acceptance gates still have to pass.
 
 Not yet complete:
 
@@ -132,6 +139,40 @@ Throughput gate:
 ```
 
 The benchmark exits non-zero below 20,000 plies/second.
+
+Apple Silicon training-path benchmark:
+
+```bash
+.venv/bin/barricade-benchmark-apple \
+  --config configs/m2_5x5.json \
+  --checkpoint artifacts/m2/m2-run-002/gated/gated-step-000000186.npz \
+  --replay artifacts/m2/m2-run-002/replay.npz \
+  --devices cpu,mps \
+  --batch-sizes 1,16,64,256 \
+  --inference-iterations 20 \
+  --inference-warmup 5 \
+  --learner-steps 4 \
+  --mcts-workers 1,2,4,8 \
+  --mcts-tasks 32 \
+  --mcts-simulations 50 \
+  --pretty
+```
+
+The benchmark is read-only: learner updates happen only in memory and the JSON
+result includes `input_files_unchanged`. On the local 20-GPU-core M4 Pro,
+representative measurements for gated step 186 were:
+
+- Current single-position NumPy inference: about 732 positions/second.
+- Single-position MPS with output copied back to CPU: about 371 positions/second, so routing the existing serial MCTS through Metal one position at a time would be slower.
+- Batch-256 MPS with output copied back: about 41,667 positions/second versus about 1,599 for batched NumPy, a roughly 26x inference-kernel opportunity once searches are gathered into batches.
+- Learner steady state: about 8.94 steps/second on MPS versus 1.29 on CPU, a roughly 6.9x speedup after Metal startup.
+- Independent 50-simulation MCTS tasks: 2, 4, and 8 worker processes reached 1.95x, 3.38x, and 6.52x the one-worker throughput with identical selected actions.
+
+These results make deterministic process-level game parallelism the lowest-risk
+next scaling change. Batched MPS inference has more upside but requires an
+inference queue/service so concurrent searches can supply useful batches.
+Passing `--device mps` to the existing cycle already accelerates only the learner;
+self-play and gating still use serial NumPy inference.
 
 M1 ladder evaluation and dashboard skeleton:
 

@@ -19,6 +19,7 @@ training = ["torch>=2.7,<3"]
 
 [project.scripts]
 barricade-benchmark = "barricade_rl.benchmark:main"
+barricade-benchmark-apple = "barricade_rl.apple_benchmark:main"
 barricade-dashboard = "barricade_rl.dashboard:main"
 barricade-evaluate = "barricade_rl.evaluate:main"
 barricade-generate-5x5-oracle = "barricade_rl.oracle5x5:main"

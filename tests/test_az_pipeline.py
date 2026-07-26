@@ -115,6 +115,7 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert result.requested_learner_steps == 1
     assert result.completed_learner_steps == 1
     assert not result.learner_steps_clamped
+    assert result.learner_device == "cpu"
     assert result.learner_step == 1
     assert result.generated_positions == 2
     assert result.learner_metrics["step"] == 1

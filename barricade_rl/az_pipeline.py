@@ -31,6 +31,7 @@ class TrainingCycleResult:
     cycle_index: int
     self_play_seed: int
     learner_step: int
+    learner_device: str
     requested_learner_steps: int
     completed_learner_steps: int
     learner_steps_clamped: bool
@@ -290,6 +291,7 @@ class AlphaZeroCoordinator:
             cycle_index=self.cycle_index,
             self_play_seed=self.self_play_seed,
             learner_step=step,
+            learner_device=str(self.learner.device),
             requested_learner_steps=learner_steps,
             completed_learner_steps=completed_learner_steps,
             learner_steps_clamped=completed_learner_steps < learner_steps,
