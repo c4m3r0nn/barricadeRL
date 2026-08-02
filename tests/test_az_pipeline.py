@@ -22,7 +22,13 @@ def _tiny_config():
     return config
 
 
-def _coordinator(tmp_path, *, cycle_index=None):
+def _coordinator(
+    tmp_path,
+    *,
+    cycle_index=None,
+    self_play_workers=1,
+    gating_workers=1,
+):
     project_config = _tiny_config()
     game = SmallGame()
     learner = AlphaZeroLearner(
@@ -55,6 +61,8 @@ def _coordinator(tmp_path, *, cycle_index=None):
         git_commit="commit",
         seed=4,
         cycle_index=cycle_index,
+        self_play_workers=self_play_workers,
+        gating_workers=gating_workers,
     )
 
 
@@ -116,6 +124,14 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert result.completed_learner_steps == 1
     assert not result.learner_steps_clamped
     assert result.learner_device == "cpu"
+    assert result.self_play_workers == 1
+    assert result.gating_workers == 1
+    assert result.parallel_protocol == "serial-v1"
+    assert result.self_play_seconds >= 0.0
+    assert result.learner_seconds >= 0.0
+    assert result.gating_seconds >= 0.0
+    assert result.self_play_games_per_hour > 0.0
+    assert result.gating_games_per_hour > 0.0
     assert result.learner_step == 1
     assert result.generated_positions == 2
     assert result.learner_metrics["step"] == 1
@@ -186,10 +202,68 @@ def test_cycle_cli_accepts_separate_continuous_learner_checkpoint(tmp_path):
             "run",
             "--git-commit",
             "commit",
+            "--self-play-workers",
+            "8",
+            "--gating-workers",
+            "8",
         ]
     )
 
     assert args.learner_checkpoint == learner_checkpoint
+    assert args.self_play_workers == 8
+    assert args.gating_workers == 8
+
+
+def test_training_cycle_routes_production_games_through_parallel_workers(
+    tmp_path,
+    monkeypatch,
+):
+    coordinator = _coordinator(
+        tmp_path,
+        self_play_workers=2,
+        gating_workers=2,
+    )
+    calls = []
+
+    def parallel_self_play(**kwargs):
+        calls.append(("self-play", kwargs["workers"], kwargs["checkpoint_path"]))
+        return _fake_self_play(
+            coordinator.game,
+            None,
+            kwargs["config"],
+            games=kwargs["games"],
+            replay_buffer=kwargs["replay_buffer"],
+        )
+
+    def parallel_gate(**kwargs):
+        calls.append(
+            (
+                "gate",
+                kwargs["workers"],
+                kwargs["candidate_checkpoint"],
+                kwargs["incumbent_checkpoint"],
+            )
+        )
+        return _gate_result(False)
+
+    monkeypatch.setattr(
+        "barricade_rl.az_pipeline.generate_self_play_games_parallel",
+        parallel_self_play,
+    )
+    monkeypatch.setattr(
+        "barricade_rl.az_pipeline.gate_checkpoints_parallel",
+        parallel_gate,
+    )
+
+    result = coordinator.run_cycle(self_play_games=2, learner_steps=1)
+
+    assert result.self_play_workers == 2
+    assert result.gating_workers == 2
+    assert result.parallel_protocol == "spawned-ordered-games-v1"
+    assert calls[0][0:2] == ("self-play", 2)
+    assert calls[0][2] == coordinator.learner_checkpoint
+    assert calls[1][0:2] == ("gate", 2)
+    assert calls[1][2] == result.candidate_checkpoint
 
 
 def test_training_cycle_supplies_one_diverse_start_per_colour_pair(tmp_path):

@@ -261,11 +261,14 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--git-commit", required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--workers", type=int, default=1)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.workers < 1:
+        raise ValueError("workers must be positive")
     project_config = load_config(args.config)
     game = small_game_from_config(project_config)
     gating_config = GatingConfig.from_project_config(project_config)
@@ -283,13 +286,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         cpuct=gating_config.cpuct,
         name=f"incumbent-{incumbent_network.metadata.get('step', 'unknown')}",
     )
-    result = gate_candidate(
-        candidate,
-        incumbent,
-        game=game,
-        config=gating_config,
-        seed=args.seed,
-    )
+    if args.workers > 1:
+        from .az_parallel import gate_checkpoints_parallel
+
+        starts = sample_gating_start_states(
+            game,
+            count=gating_config.games_per_color,
+            seed=args.seed,
+            min_plies=gating_config.start_min_plies,
+            max_plies=gating_config.start_max_plies,
+        )
+        result = gate_checkpoints_parallel(
+            project_config=project_config,
+            candidate_checkpoint=args.candidate,
+            incumbent_checkpoint=args.incumbent,
+            game=game,
+            config=gating_config,
+            seed=args.seed,
+            workers=args.workers,
+            initial_states=starts,
+            start_seed=args.seed,
+        )
+    else:
+        result = gate_candidate(
+            candidate,
+            incumbent,
+            game=game,
+            config=gating_config,
+            seed=args.seed,
+        )
     args.result.parent.mkdir(parents=True, exist_ok=True)
     args.result.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")
     if result.promoted:

@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Callable, Mapping, Sequence
 
 import numpy as np
@@ -18,6 +19,11 @@ from .az_gating import (
 )
 from .az_learner import AlphaZeroLearner
 from .az_network import AlphaZeroNetwork
+from .az_parallel import (
+    PARALLEL_PROTOCOL,
+    gate_checkpoints_parallel,
+    generate_self_play_games_parallel,
+)
 from .az_replay import AlphaZeroReplayBuffer
 from .az_self_play import SelfPlayConfig, generate_self_play_games
 from .config import config_hash as calculate_config_hash
@@ -32,6 +38,14 @@ class TrainingCycleResult:
     self_play_seed: int
     learner_step: int
     learner_device: str
+    self_play_workers: int
+    gating_workers: int
+    parallel_protocol: str
+    self_play_seconds: float
+    learner_seconds: float
+    gating_seconds: float
+    self_play_games_per_hour: float
+    gating_games_per_hour: float
     requested_learner_steps: int
     completed_learner_steps: int
     learner_steps_clamped: bool
@@ -85,11 +99,11 @@ class CapAdjudicationConfig:
 
 
 class AlphaZeroCoordinator:
-    """Synchronous M2 cycle with a continuous learner and gated self-play.
+    """Phased M2 cycle with a continuous learner and gated self-play.
 
-    This is the correctness-first local coordinator. The later inference-server
-    deployment can replace its runners without changing replay, learner, or gate
-    contracts.
+    Independent games can run in spawned workers while phase boundaries remain
+    synchronous. A later batched inference service can replace the evaluators
+    without changing replay, learner, or gate contracts.
     """
 
     def __init__(
@@ -106,6 +120,8 @@ class AlphaZeroCoordinator:
         git_commit: str,
         seed: int,
         cycle_index: int | None = None,
+        self_play_workers: int = 1,
+        gating_workers: int = 1,
     ) -> None:
         if not run_id or not git_commit:
             raise ValueError("run_id and git_commit are required")
@@ -126,6 +142,10 @@ class AlphaZeroCoordinator:
         self.run_id = run_id
         self.git_commit = git_commit
         self.seed = int(seed)
+        self.self_play_workers = int(self_play_workers)
+        self.gating_workers = int(gating_workers)
+        if self.self_play_workers < 1 or self.gating_workers < 1:
+            raise ValueError("self-play and gating workers must be positive")
         self.cycle_index = (
             _next_cycle_index(self.output_directory)
             if cycle_index is None
@@ -178,22 +198,42 @@ class AlphaZeroCoordinator:
     ) -> TrainingCycleResult:
         if self_play_games < 1 or learner_steps < 1:
             raise ValueError("self_play_games and learner_steps must be positive")
+        self_play_started = perf_counter()
         incumbent_network = AlphaZeroNetwork.load_checkpoint(self.incumbent_checkpoint)
         positions_before = self.replay_buffer.total_positions_added
-        self_play_records = self_play_runner(
-            self.game,
-            incumbent_network,
-            self.self_play_config,
-            games=self_play_games,
-            replay_buffer=self.replay_buffer,
-            run_id=self.run_id,
-            config_hash=self.config_hash,
-            git_commit=self.git_commit,
-            rng=self.rng,
-            game_id_prefix=(
-                f"{self.run_id}-cycle-{self.cycle_index:06d}"
-            ),
+        game_id_prefix = f"{self.run_id}-cycle-{self.cycle_index:06d}"
+        parallel_self_play = (
+            self.self_play_workers > 1
+            and self_play_runner is generate_self_play_games
         )
+        if parallel_self_play:
+            self_play_records = generate_self_play_games_parallel(
+                project_config=self.project_config,
+                checkpoint_path=self.incumbent_checkpoint,
+                config=self.self_play_config,
+                games=self_play_games,
+                replay_buffer=self.replay_buffer,
+                run_id=self.run_id,
+                config_hash=self.config_hash,
+                git_commit=self.git_commit,
+                seed=self.self_play_seed,
+                workers=self.self_play_workers,
+                game_id_prefix=game_id_prefix,
+            )
+        else:
+            self_play_records = self_play_runner(
+                self.game,
+                incumbent_network,
+                self.self_play_config,
+                games=self_play_games,
+                replay_buffer=self.replay_buffer,
+                run_id=self.run_id,
+                config_hash=self.config_hash,
+                git_commit=self.git_commit,
+                rng=self.rng,
+                game_id_prefix=game_id_prefix,
+            )
+        self_play_seconds = perf_counter() - self_play_started
         self_play_cap_fraction = (
             sum(bool(getattr(record, "capped", False)) for record in self_play_records)
             / len(self_play_records)
@@ -225,6 +265,7 @@ class AlphaZeroCoordinator:
             raise RuntimeError(
                 "self-play did not create enough replay headroom for one learner step"
             )
+        learner_started = perf_counter()
         latest_metrics = self.learner.train(
             self.replay_buffer,
             steps=completed_learner_steps,
@@ -241,7 +282,9 @@ class AlphaZeroCoordinator:
             git_commit=self.git_commit,
             config_hash=self.config_hash,
         )
+        learner_seconds = perf_counter() - learner_started
 
+        gating_started = perf_counter()
         candidate_policy = NetworkMCTSPolicy(
             self.learner.network,
             simulations=self.gating_config.evaluation_simulations,
@@ -254,15 +297,30 @@ class AlphaZeroCoordinator:
             cpuct=self.gating_config.cpuct,
             name=f"incumbent-{incumbent_network.metadata.get('step', 0)}",
         )
-        gating_result = gate_runner(
-            candidate_policy,
-            incumbent_policy,
-            game=self.game,
-            config=self.gating_config,
-            seed=self.gating_seed,
-            initial_states=self.gating_start_states,
-            start_seed=self.gating_start_seed,
-        )
+        parallel_gating = self.gating_workers > 1 and gate_runner is gate_candidate
+        if parallel_gating:
+            gating_result = gate_checkpoints_parallel(
+                project_config=self.project_config,
+                candidate_checkpoint=candidate_path,
+                incumbent_checkpoint=self.incumbent_checkpoint,
+                game=self.game,
+                config=self.gating_config,
+                seed=self.gating_seed,
+                workers=self.gating_workers,
+                initial_states=self.gating_start_states,
+                start_seed=self.gating_start_seed,
+            )
+        else:
+            gating_result = gate_runner(
+                candidate_policy,
+                incumbent_policy,
+                game=self.game,
+                config=self.gating_config,
+                seed=self.gating_seed,
+                initial_states=self.gating_start_states,
+                start_seed=self.gating_start_seed,
+            )
+        gating_seconds = perf_counter() - gating_started
 
         gating_directory = self.output_directory / "gating"
         gating_directory.mkdir(parents=True, exist_ok=True)
@@ -292,6 +350,22 @@ class AlphaZeroCoordinator:
             self_play_seed=self.self_play_seed,
             learner_step=step,
             learner_device=str(self.learner.device),
+            self_play_workers=self.self_play_workers if parallel_self_play else 1,
+            gating_workers=self.gating_workers if parallel_gating else 1,
+            parallel_protocol=(
+                PARALLEL_PROTOCOL
+                if parallel_self_play or parallel_gating
+                else "serial-v1"
+            ),
+            self_play_seconds=self_play_seconds,
+            learner_seconds=learner_seconds,
+            gating_seconds=gating_seconds,
+            self_play_games_per_hour=(
+                3600.0 * self_play_games / max(self_play_seconds, 1e-12)
+            ),
+            gating_games_per_hour=(
+                3600.0 * self.gating_config.games / max(gating_seconds, 1e-12)
+            ),
             requested_learner_steps=learner_steps,
             completed_learner_steps=completed_learner_steps,
             learner_steps_clamped=completed_learner_steps < learner_steps,
@@ -373,6 +447,8 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--git-commit", required=True)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--self-play-workers", type=int, default=1)
+    parser.add_argument("--gating-workers", type=int, default=1)
     return parser.parse_args(argv)
 
 
@@ -412,6 +488,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id=args.run_id,
         git_commit=args.git_commit,
         seed=args.seed,
+        self_play_workers=args.self_play_workers,
+        gating_workers=args.gating_workers,
     )
     result = coordinator.run_cycle(
         self_play_games=args.self_play_games,

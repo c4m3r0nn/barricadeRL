@@ -3,6 +3,7 @@ import numpy as np
 from barricade_rl.az_gating import (
     GatingConfig,
     NetworkMCTSPolicy,
+    _parse_args,
     archive_promoted_checkpoint,
     gate_candidate,
     sample_gating_start_states,
@@ -16,6 +17,29 @@ from barricade_rl.small_board import SmallGame
 class NamedStub:
     def __init__(self, name):
         self.name = name
+
+
+def test_gate_cli_accepts_parallel_workers(tmp_path):
+    args = _parse_args(
+        [
+            "--candidate",
+            str(tmp_path / "candidate.npz"),
+            "--incumbent",
+            str(tmp_path / "incumbent.npz"),
+            "--gated-directory",
+            str(tmp_path / "gated"),
+            "--result",
+            str(tmp_path / "gate.json"),
+            "--run-id",
+            "run",
+            "--git-commit",
+            "commit",
+            "--workers",
+            "8",
+        ]
+    )
+
+    assert args.workers == 8
 
 
 def _match(candidate, opponent, *, games_per_color, seed, game, wins, initial_states=None):

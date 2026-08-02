@@ -24,9 +24,9 @@ The remaining M2 milestone work is:
 
 - Run proper self-play training, checkpoint gating, and the M2 acceptance evaluations against the exact validation corpus.
 
-Latest local test verification (2026-07-26):
+Latest local test verification (2026-08-02):
 
-- 189 Python tests and 2 Rust tests passed.
+- 193 Python tests and 2 Rust tests passed.
 
 Latest heavy rules verification (2026-07-07):
 
@@ -89,19 +89,21 @@ Implemented:
 - Handover compliance tests for M2 config constants, Gymnasium usage, masked softmax call sites, terminal reward/gamma choices, dashboard metrics, and the flat policy-head decision.
 - Local held-out oracle artifact `artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl`: 5,000 exact, non-terminal, unique positions under the 200-ply rules, balanced 1,667/1,667/1,666 across opening/midgame/endgame, with a passing strict audit and training-readiness preflight.
 - Read-only Apple Silicon benchmark harness covering NumPy and PyTorch CPU/MPS inference parity and throughput, learner cold/steady-state timing, and deterministic multi-process MCTS scaling. It hashes the checkpoint and replay before and after the run to prove that benchmark inputs were not modified.
+- Spawn-based production parallelism for self-play and paired checkpoint gating. Each worker loads immutable checkpoints once, uses an index-derived deterministic game seed, runs one CPU thread, and returns complete game records for ordered merging in the parent. Worker counts cannot change replay order or gate outcomes. Cycle records include the execution protocol, worker counts, phase durations, and games/hour.
 
-Latest local M2 training result (2026-07-26):
+Latest local M2 training result (2026-07-27):
 
-- Cycle 11 promoted learner step 186 over gated step 86: 104 candidate wins, 73 incumbent wins, and 23 draws over 200 paired games, for a 0.5775 score rate against the 0.55 promotion threshold.
-- The new local gated checkpoint is `artifacts/m2/m2-run-002/gated/gated-step-000000186.npz`.
-- This is a meaningful training promotion, not M2 completion. The supervisor's separate 99% held-out value-sign and 800-simulation solver-move acceptance gates still have to pass.
+- Cycle 12 continued the learner from step 186 to step 206 on MPS. All 20 requested updates completed, replay consumption remained healthy at 3.446 samples per generated position, and total/policy/value losses improved to 1.845/0.920/0.575.
+- Step 206 scored 105.5 points over 200 paired games against gated step 186, a 0.5275 score rate below the 0.55 promotion threshold. It correctly remains the continuous learner checkpoint while `gated-step-000000186.npz` remains the self-play incumbent.
+- Self-play cap fraction improved to 0.043, below the 0.05 trigger. Gate cap fraction was still 0.145, so capped evaluation games remain a convergence concern.
+- This is ongoing training, not M2 completion. The supervisor's separate 99% held-out value-sign and 800-simulation solver-move acceptance gates still have to pass.
 
 Not yet complete:
 
 - Full 5x5 solver/proof-number or retrograde oracle for the entire solved state space.
-- MCTS tree reuse, batched inference, transposition sharing, Gumbel mode, multi-process inference-service scaling, and M2 training acceptance.
+- MCTS tree reuse, batched Metal inference, transposition sharing, Gumbel mode, and M2 training acceptance.
 
-The compacted 5x5 validation corpus now passes `--audit-corpus` and the full training-readiness preflight, so proper M2 training may begin. The synchronous cycle is suitable for correctness-first M2 runs; multi-process batched inference remains the scaling step for high-throughput training.
+The compacted 5x5 validation corpus passes `--audit-corpus` and the full training-readiness preflight. Proper M2 training is active, with deterministic process-level game parallelism available for high-throughput local cycles. Batched Metal inference remains a separate MCTS architecture change.
 
 ## Setup
 
@@ -168,11 +170,13 @@ representative measurements for gated step 186 were:
 - Learner steady state: about 8.94 steps/second on MPS versus 1.29 on CPU, a roughly 6.9x speedup after Metal startup.
 - Independent 50-simulation MCTS tasks: 2, 4, and 8 worker processes reached 1.95x, 3.38x, and 6.52x the one-worker throughput with identical selected actions.
 
-These results make deterministic process-level game parallelism the lowest-risk
-next scaling change. Batched MPS inference has more upside but requires an
-inference queue/service so concurrent searches can supply useful batches.
-Passing `--device mps` to the existing cycle already accelerates only the learner;
-self-play and gating still use serial NumPy inference.
+Deterministic process-level game parallelism is now integrated. A production-model
+smoke benchmark measured 8-worker paired gating at 4.74x one-worker throughput
+with identical complete results; a short eight-game self-play smoke reached 2.22x
+because process startup dominated, while the longer 32-task search benchmark
+reached 6.52x. Batched MPS inference still requires an inference queue/service so
+concurrent searches can supply useful batches. `--device mps` accelerates the
+learner; `--self-play-workers` and `--gating-workers` accelerate the CPU search phases.
 
 M1 ladder evaluation and dashboard skeleton:
 
@@ -311,7 +315,9 @@ Run one complete self-play, learner, and gating cycle only after the oracle audi
   --run-id m2-run-001 \
   --git-commit YOUR_GIT_COMMIT \
   --seed 0 \
-  --device cpu
+  --device mps \
+  --self-play-workers 8 \
+  --gating-workers 8
 ```
 
 On the first cycle, omitting `--learner-checkpoint` initializes the learner from
@@ -320,6 +326,10 @@ On the first cycle, omitting `--learner-checkpoint` initializes the learner from
 not promoted. The learner is continuous; gating controls only which network
 generates self-play and serves as the evaluation incumbent. Every cycle records
 the learner input checkpoint separately from the incumbent checkpoint.
+When worker counts exceed one, the cycle uses `spawned-ordered-games-v1`:
+per-game seeds are fixed before work is dispatched, workers never mutate replay,
+and the parent merges completed games in index order. Cycle JSON includes the
+effective worker counts, phase timings, and games/hour.
 
 For exact late-game labels covered by the no-wall tablebase, use `--method hybrid --sampling no-wall`.
 For low-wall endgames, enable the conservative exact low-wall solver explicitly:
