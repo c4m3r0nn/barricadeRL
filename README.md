@@ -22,11 +22,11 @@ Milestones M0 and M1 are complete. M2 is in progress. Implemented foundation:
 
 The remaining M2 milestone work is:
 
-- Run proper self-play training, checkpoint gating, and the M2 acceptance evaluations against the exact validation corpus.
+- Improve the value head and searched policy until every formal M2 acceptance gate passes, then reproduce the result on a fresh, frozen held-out corpus.
 
-Latest local test verification (2026-08-02):
+Latest local test verification (2026-08-04):
 
-- 193 Python tests and 2 Rust tests passed.
+- 198 Python tests and 2 Rust tests passed.
 
 Latest heavy rules verification (2026-07-07):
 
@@ -90,20 +90,23 @@ Implemented:
 - Local held-out oracle artifact `artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl`: 5,000 exact, non-terminal, unique positions under the 200-ply rules, balanced 1,667/1,667/1,666 across opening/midgame/endgame, with a passing strict audit and training-readiness preflight.
 - Read-only Apple Silicon benchmark harness covering NumPy and PyTorch CPU/MPS inference parity and throughput, learner cold/steady-state timing, and deterministic multi-process MCTS scaling. It hashes the checkpoint and replay before and after the run to prove that benchmark inputs were not modified.
 - Spawn-based production parallelism for self-play and paired checkpoint gating. Each worker loads immutable checkpoints once, uses an index-derived deterministic game seed, runs one CPU thread, and returns complete game records for ordered merging in the parent. Worker counts cannot change replay order or gate outcomes. Cycle records include the execution protocol, worker counts, phase durations, and games/hour.
+- Formal, resumable M2 checkpoint evaluation via `barricade-evaluate-m2`. It validates corpus/checkpoint provenance, derives every exact optimal move rather than comparing against one arbitrary solver move, reports batched value accuracy, phase splits, bias, and calibration, and evaluates deterministic 800-simulation MCTS in crash-safe parallel workers. Its summary keeps the full-wall initial-position proof and monotone fixed-ladder history visibly blocked until those evidence sources exist.
 
-Latest local M2 training result (2026-07-27):
+Latest local M2 training and diagnostic result (2026-08-04):
 
-- Cycle 12 continued the learner from step 186 to step 206 on MPS. All 20 requested updates completed, replay consumption remained healthy at 3.446 samples per generated position, and total/policy/value losses improved to 1.845/0.920/0.575.
-- Step 206 scored 105.5 points over 200 paired games against gated step 186, a 0.5275 score rate below the 0.55 promotion threshold. It correctly remains the continuous learner checkpoint while `gated-step-000000186.npz` remains the self-play incumbent.
-- Self-play cap fraction improved to 0.043, below the 0.05 trigger. Gate cap fraction was still 0.145, so capped evaluation games remain a convergence concern.
-- This is ongoing training, not M2 completion. The supervisor's separate 99% held-out value-sign and 800-simulation solver-move acceptance gates still have to pass.
+- Cycle 13 generated 512 games with eight workers at 4,098 games/hour. The MPS learner completed 30 updates in 3.99 seconds; gating remained the bottleneck at 47.7 minutes for 200 games despite eight workers.
+- Step 236 scored 99 points against gated step 186 for a 0.495 score rate and was correctly rejected. Its self-play cap fraction was 0.023; its gate cap fraction remained 0.14.
+- On all 5,000 exact no-wall validation positions, step 236's raw policy selected a member of the complete solver-optimal action set 87.04% of the time. Comparing only with the corpus's single recorded best action would have misleadingly reported 33.62%.
+- The value head achieved only 52.24% sign accuracy. A phase-interleaved 32-position acceptance-path smoke test selected solver-optimal moves on 31/32 positions (96.875%) with 800-simulation MCTS and resumed with zero recomputation, but it is not the required 5,000-position result.
+- M2 is therefore not complete. Value accuracy is the immediate training blocker; the full-wall initial second-player-win proof, a complete 5,000-position MCTS run, and monotone fixed-ladder Elo evidence are also outstanding.
+- Because this corpus has now informed training decisions, treat it as validation data. Freeze a newly generated exact corpus for the eventual final held-out acceptance run.
 
 Not yet complete:
 
 - Full 5x5 solver/proof-number or retrograde oracle for the entire solved state space.
 - MCTS tree reuse, batched Metal inference, transposition sharing, Gumbel mode, and M2 training acceptance.
 
-The compacted 5x5 validation corpus passes `--audit-corpus` and the full training-readiness preflight. Proper M2 training is active, with deterministic process-level game parallelism available for high-throughput local cycles. Batched Metal inference remains a separate MCTS architecture change.
+The compacted 5x5 validation corpus passes `--audit-corpus` and the full training-readiness preflight. Proper M2 training is active, with deterministic process-level game parallelism available for high-throughput local cycles. The formal evaluator now identifies the value head—not raw move ranking—as the immediate learning problem. Batched Metal inference remains a separate MCTS architecture change.
 
 ## Setup
 
@@ -330,6 +333,31 @@ When worker counts exceed one, the cycle uses `spawned-ordered-games-v1`:
 per-game seeds are fixed before work is dispatched, workers never mutate replay,
 and the parent merges completed games in index order. Cycle JSON includes the
 effective worker counts, phase timings, and games/hour.
+
+Run the cheap, full-corpus value and raw-policy diagnostic before committing to
+the expensive searched-policy evaluation:
+
+```bash
+.venv/bin/barricade-evaluate-m2 \
+  --config configs/m2_5x5.json \
+  --oracle-corpus artifacts/m2/oracle_5x5_exact_5000_cap200.jsonl \
+  --checkpoint artifacts/m2/m2-run-002/candidates/candidate-cycle-000013-step-000000236.npz \
+  --output-directory artifacts/m2/m2-run-002/acceptance-step-000000236 \
+  --workers 8 \
+  --value-only \
+  --progress-every 500
+```
+
+When the value-sign and raw-policy metrics are close enough to justify the cost,
+remove `--value-only` to run the supervisor's 800-simulation MCTS check. Results
+are appended to `positions.jsonl` after every position, so the same command can
+be rerun after interruption and will resume. `manifest.json` prevents accidental
+reuse with a different checkpoint, corpus, config, or simulation budget, and
+`summary.json` records every criterion. Use `--position-limit 32` for a smoke
+test only; limited positions are interleaved across game phases and the run is
+always reported as incomplete. Add `--require-pass`
+only in a blocking CI or release command, where any unmet criterion should return
+a non-zero exit status.
 
 For exact late-game labels covered by the no-wall tablebase, use `--method hybrid --sampling no-wall`.
 For low-wall endgames, enable the conservative exact low-wall solver explicitly:
