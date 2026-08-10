@@ -8,11 +8,15 @@ from barricade_rl.az_network import AlphaZeroNetwork
 from barricade_rl.config import config_hash, load_config, small_game_from_config
 from barricade_rl.m2_acceptance import (
     _parse_args,
+    _parse_validation_args,
     _select_position_indices,
     complete_optimal_actions,
     compute_value_metrics,
+    evaluate_checkpoint_weight_variants,
     evaluate_m2_checkpoint,
+    evaluate_weight_variants,
 )
+from barricade_rl.oracle5x5 import OracleLabel
 from barricade_rl.oracle5x5 import NoWallTablebase
 from barricade_rl.small_board import SmallState
 
@@ -171,3 +175,84 @@ def test_limited_acceptance_positions_span_every_phase_deterministically():
         "midgame",
         "endgame",
     }
+
+
+def test_weight_variant_diagnostics_expose_raw_and_ema_value_drift():
+    config = _tiny_config()
+    game = small_game_from_config(config)
+    state = SmallState.from_components(
+        spec=game.spec,
+        pawns=((3, 2), (4, 4)),
+        walls_remaining=(0, 0),
+        current_player=0,
+        ply=2,
+    )
+    tablebase = NoWallTablebase(game)
+    label = tablebase.solve(state)
+    actions, complete = complete_optimal_actions(game, state, label, tablebase)
+    network = AlphaZeroNetwork.from_config(config, seed=3)
+    network.params["value_fc2_b"].fill(3.0)
+    network.ema_params["value_fc2_b"].fill(-3.0)
+
+    result = evaluate_weight_variants(
+        network=network,
+        game=game,
+        labels=(OracleLabel.from_dict(label.to_dict()),),
+        optimal_sets=(actions,),
+        optimal_complete=(complete,),
+        batch_size=1,
+    )
+
+    assert result["raw"]["value"]["predicted_positive_fraction"] == 1.0
+    assert result["ema"]["value"]["predicted_positive_fraction"] == 0.0
+    assert result["delta_raw_minus_ema"]["value_sign_accuracy"] in (-1.0, 1.0)
+    assert result["raw"]["policy"]["complete_optimal_set_positions"] == 1
+
+
+def test_checkpoint_weight_diagnostics_reuse_complete_optimal_action_cache(tmp_path):
+    config_path, checkpoint, corpus, game, _ = _artifacts(tmp_path)
+    config = load_config(config_path)
+    network = AlphaZeroNetwork.load_checkpoint(checkpoint)
+    cache = tmp_path / "validation"
+    kwargs = dict(
+        project_config=config,
+        game=game,
+        network=network,
+        oracle_corpus=corpus,
+        cache_directory=cache,
+        workers=1,
+        batch_size=2,
+    )
+
+    first = evaluate_checkpoint_weight_variants(**kwargs)
+    cache_before = (cache / "optimal_actions.jsonl").read_text()
+    second = evaluate_checkpoint_weight_variants(**kwargs)
+
+    assert first == second
+    assert (cache / "optimal_actions.jsonl").read_text() == cache_before
+    assert first["checkpoint_step"] == 0
+    assert first["ema_initialization_weight"] == 1.0
+    assert first["optimal_action_sets"]["complete_fraction"] == 1.0
+
+
+def test_weight_validation_cli_exposes_cache_and_parallel_controls(tmp_path):
+    args = _parse_validation_args(
+        [
+            "--oracle-corpus",
+            str(tmp_path / "oracle.jsonl"),
+            "--checkpoint",
+            str(tmp_path / "checkpoint.npz"),
+            "--cache-directory",
+            str(tmp_path / "cache"),
+            "--output",
+            str(tmp_path / "validation.json"),
+            "--workers",
+            "8",
+            "--batch-size",
+            "1024",
+        ]
+    )
+
+    assert args.workers == 8
+    assert args.batch_size == 1024
+    assert args.output == tmp_path / "validation.json"

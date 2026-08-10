@@ -118,6 +118,161 @@ def compute_value_metrics(
     return result
 
 
+def evaluate_weight_variants(
+    *,
+    network: AlphaZeroNetwork,
+    game,
+    labels: Sequence[OracleLabel],
+    optimal_sets: Sequence[Sequence[int]],
+    optimal_complete: Sequence[bool],
+    batch_size: int = 512,
+) -> dict:
+    """Compare raw and EMA inference without running search or changing weights."""
+    if batch_size < 1:
+        raise ValueError("validation batch size must be positive")
+    if not (
+        len(labels) == len(optimal_sets) == len(optimal_complete)
+        and len(labels) > 0
+    ):
+        raise ValueError("labels and optimal-action sets must be non-empty and aligned")
+    states = tuple(
+        SmallState.from_key(game.spec, bytes.fromhex(label.state_key))
+        for label in labels
+    )
+    phases = tuple(_phase_bucket(label.ply, game.spec.max_plies) for label in labels)
+    targets = np.asarray([int(label.value) for label in labels], dtype=np.int8)
+    complete_mask = np.asarray(optimal_complete, dtype=np.bool_)
+    variants = {}
+    for name, use_ema in (("raw", False), ("ema", True)):
+        predictions, actions = _network_predictions(
+            network,
+            game,
+            states,
+            batch_size=batch_size,
+            use_ema=use_ema,
+        )
+        matches = np.asarray(
+            [
+                int(action) in optimal
+                for action, optimal in zip(actions, optimal_sets, strict=True)
+            ],
+            dtype=np.bool_,
+        )
+        variants[name] = {
+            "value": compute_value_metrics(
+                predictions=predictions,
+                targets=targets,
+                phases=phases,
+            ),
+            "policy": {
+                "positions": len(labels),
+                "complete_optimal_set_positions": int(complete_mask.sum()),
+                "optimal_action_accuracy": (
+                    float(np.mean(matches[complete_mask]))
+                    if complete_mask.any()
+                    else None
+                ),
+                "recorded_best_action_accuracy": float(
+                    np.mean(
+                        actions
+                        == np.asarray(
+                            [int(label.best_action) for label in labels],
+                            dtype=np.int64,
+                        )
+                    )
+                ),
+            },
+        }
+    raw_policy_accuracy = variants["raw"]["policy"]["optimal_action_accuracy"]
+    ema_policy_accuracy = variants["ema"]["policy"]["optimal_action_accuracy"]
+    variants["delta_raw_minus_ema"] = {
+        "value_sign_accuracy": (
+            variants["raw"]["value"]["sign_accuracy"]
+            - variants["ema"]["value"]["sign_accuracy"]
+        ),
+        "value_mean_squared_error": (
+            variants["raw"]["value"]["mean_squared_error"]
+            - variants["ema"]["value"]["mean_squared_error"]
+        ),
+        "policy_optimal_action_accuracy": (
+            None
+            if raw_policy_accuracy is None or ema_policy_accuracy is None
+            else raw_policy_accuracy - ema_policy_accuracy
+        ),
+    }
+    return variants
+
+
+def evaluate_checkpoint_weight_variants(
+    *,
+    project_config: Mapping,
+    game,
+    network: AlphaZeroNetwork,
+    oracle_corpus: str | Path,
+    cache_directory: str | Path,
+    workers: int = 1,
+    batch_size: int = 512,
+    progress_every: int = 500,
+) -> dict:
+    """Produce reusable development telemetry for raw and EMA checkpoint weights."""
+    if workers < 1 or progress_every < 1:
+        raise ValueError("validation workers and progress interval must be positive")
+    corpus_path = Path(oracle_corpus)
+    if not corpus_path.is_file():
+        raise FileNotFoundError(corpus_path)
+    cfg_hash = calculate_config_hash(project_config)
+    labels, payloads = _load_validated_corpus(corpus_path, cfg_hash)
+    _validate_network(game, network, cfg_hash)
+    output = Path(cache_directory)
+    output.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": ACCEPTANCE_SCHEMA_VERSION,
+        "config_hash": cfg_hash,
+        "corpus_sha256": _sha256(corpus_path),
+        "positions": len(labels),
+    }
+    _ensure_manifest(output / "manifest.json", manifest)
+    optimal_sets, optimal_complete = _load_or_compute_optimal_actions(
+        output / "optimal_actions.jsonl",
+        project_config,
+        labels,
+        workers=workers,
+        progress_every=progress_every,
+    )
+    variants = evaluate_weight_variants(
+        network=network,
+        game=game,
+        labels=labels,
+        optimal_sets=optimal_sets,
+        optimal_complete=optimal_complete,
+        batch_size=batch_size,
+    )
+    step = int(network.metadata.get("step", 0))
+    decay = float(network.config.ema_decay)
+    phases = tuple(_phase_bucket(label.ply, game.spec.max_plies) for label in labels)
+    return {
+        "schema_version": ACCEPTANCE_SCHEMA_VERSION,
+        "checkpoint_step": step,
+        "ema_decay": decay,
+        "ema_initialization_weight": float(decay**step),
+        "corpus": {
+            "path": str(corpus_path),
+            "sha256": manifest["corpus_sha256"],
+            "positions": len(labels),
+            "exact_positions": sum(bool(payload["exact"]) for payload in payloads),
+            "phase_counts": {
+                phase: phases.count(phase)
+                for phase in ("opening", "midgame", "endgame")
+            },
+        },
+        "optimal_action_sets": {
+            "complete_positions": int(np.sum(optimal_complete)),
+            "complete_fraction": float(np.mean(optimal_complete)),
+        },
+        **variants,
+    }
+
+
 def evaluate_m2_checkpoint(
     *,
     config_path: str | Path,
@@ -447,6 +602,7 @@ def _network_predictions(
     states: Sequence[SmallState],
     *,
     batch_size: int,
+    use_ema: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     values = []
     actions = []
@@ -456,7 +612,7 @@ def _network_predictions(
             [game.canonical_observation(state) for state in batch_states]
         )
         masks = np.stack([game.legal_actions(state) for state in batch_states])
-        output = network.forward(observations, use_ema=True)
+        output = network.forward(observations, use_ema=use_ema)
         values.append(output.value)
         actions.append(np.where(masks, output.policy_logits, -np.inf).argmax(axis=1))
     return np.concatenate(values), np.concatenate(actions).astype(np.int64)
@@ -692,6 +848,21 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _parse_validation_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compare raw and EMA checkpoint weights on exact 5x5 labels."
+    )
+    parser.add_argument("--config", type=Path, default=Path("configs/m2_5x5.json"))
+    parser.add_argument("--oracle-corpus", type=Path, required=True)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--cache-directory", type=Path, required=True)
+    parser.add_argument("--output", type=Path, default=None)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--progress-every", type=int, default=500)
+    return parser.parse_args(argv)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     summary = evaluate_m2_checkpoint(
@@ -709,6 +880,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(json.dumps(summary, sort_keys=True))
     if args.require_pass and summary["criteria"]["overall_status"] != "pass":
         return 1
+    return 0
+
+
+def validation_main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_validation_args(argv)
+    project_config = load_config(args.config)
+    result = evaluate_checkpoint_weight_variants(
+        project_config=project_config,
+        game=small_game_from_config(project_config),
+        network=AlphaZeroNetwork.load_checkpoint(args.checkpoint),
+        oracle_corpus=args.oracle_corpus,
+        cache_directory=args.cache_directory,
+        workers=args.workers,
+        batch_size=args.batch_size,
+        progress_every=args.progress_every,
+    )
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

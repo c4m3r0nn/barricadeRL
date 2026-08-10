@@ -28,6 +28,7 @@ from .az_replay import AlphaZeroReplayBuffer
 from .az_self_play import SelfPlayConfig, generate_self_play_games
 from .config import config_hash as calculate_config_hash
 from .config import load_config, small_game_from_config
+from .m2_acceptance import evaluate_checkpoint_weight_variants
 from .training_readiness import check_training_readiness
 
 
@@ -43,6 +44,7 @@ class TrainingCycleResult:
     parallel_protocol: str
     self_play_seconds: float
     learner_seconds: float
+    validation_seconds: float
     gating_seconds: float
     self_play_games_per_hour: float
     gating_games_per_hour: float
@@ -54,6 +56,7 @@ class TrainingCycleResult:
     replay_size: int
     samples_per_position: float
     learner_metrics: dict[str, int | float]
+    validation: dict[str, object] | None
     self_play_cap_fraction: float
     high_cap_streak: int
     adjudication_active: bool
@@ -122,6 +125,10 @@ class AlphaZeroCoordinator:
         cycle_index: int | None = None,
         self_play_workers: int = 1,
         gating_workers: int = 1,
+        oracle_corpus: str | Path | None = None,
+        validation_workers: int = 1,
+        validation_batch_size: int = 512,
+        validation_progress_every: int = 500,
     ) -> None:
         if not run_id or not git_commit:
             raise ValueError("run_id and git_commit are required")
@@ -144,8 +151,20 @@ class AlphaZeroCoordinator:
         self.seed = int(seed)
         self.self_play_workers = int(self_play_workers)
         self.gating_workers = int(gating_workers)
-        if self.self_play_workers < 1 or self.gating_workers < 1:
-            raise ValueError("self-play and gating workers must be positive")
+        self.validation_workers = int(validation_workers)
+        self.validation_batch_size = int(validation_batch_size)
+        self.validation_progress_every = int(validation_progress_every)
+        if min(
+            self.self_play_workers,
+            self.gating_workers,
+            self.validation_workers,
+            self.validation_batch_size,
+            self.validation_progress_every,
+        ) < 1:
+            raise ValueError("worker counts, validation batch size, and progress must be positive")
+        self.oracle_corpus = None if oracle_corpus is None else Path(oracle_corpus)
+        if self.oracle_corpus is not None and not self.oracle_corpus.is_file():
+            raise FileNotFoundError(self.oracle_corpus)
         self.cycle_index = (
             _next_cycle_index(self.output_directory)
             if cycle_index is None
@@ -195,6 +214,7 @@ class AlphaZeroCoordinator:
         learner_steps: int,
         self_play_runner: Callable = generate_self_play_games,
         gate_runner: Callable = gate_candidate,
+        validation_runner: Callable = evaluate_checkpoint_weight_variants,
     ) -> TrainingCycleResult:
         if self_play_games < 1 or learner_steps < 1:
             raise ValueError("self_play_games and learner_steps must be positive")
@@ -284,6 +304,32 @@ class AlphaZeroCoordinator:
         )
         learner_seconds = perf_counter() - learner_started
 
+        validation_started = perf_counter()
+        validation = None
+        if self.oracle_corpus is not None:
+            validation_directory = self.output_directory / "validation"
+            validation_directory.mkdir(parents=True, exist_ok=True)
+            detailed_validation = validation_runner(
+                project_config=self.project_config,
+                game=self.game,
+                network=self.learner.network,
+                oracle_corpus=self.oracle_corpus,
+                cache_directory=validation_directory,
+                workers=self.validation_workers,
+                batch_size=self.validation_batch_size,
+                progress_every=self.validation_progress_every,
+            )
+            validation_path = validation_directory / (
+                f"validation-cycle-{self.cycle_index:06d}-step-{step:09d}.json"
+            )
+            validation_path.write_text(
+                json.dumps(detailed_validation, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            validation = _compact_validation(detailed_validation)
+            validation["artifact"] = str(validation_path)
+        validation_seconds = perf_counter() - validation_started
+
         gating_started = perf_counter()
         candidate_policy = NetworkMCTSPolicy(
             self.learner.network,
@@ -359,6 +405,7 @@ class AlphaZeroCoordinator:
             ),
             self_play_seconds=self_play_seconds,
             learner_seconds=learner_seconds,
+            validation_seconds=validation_seconds,
             gating_seconds=gating_seconds,
             self_play_games_per_hour=(
                 3600.0 * self_play_games / max(self_play_seconds, 1e-12)
@@ -374,6 +421,7 @@ class AlphaZeroCoordinator:
             replay_size=self.replay_buffer.size,
             samples_per_position=latest_metrics.samples_per_position,
             learner_metrics=latest_metrics.to_dict(),
+            validation=validation,
             self_play_cap_fraction=self_play_cap_fraction,
             high_cap_streak=high_cap_streak,
             adjudication_active=self.adjudication_active,
@@ -392,6 +440,53 @@ class AlphaZeroCoordinator:
 def _cycle_seed(base_seed: int, cycle_index: int, *, stream: int) -> int:
     sequence = np.random.SeedSequence([int(base_seed), int(cycle_index), int(stream)])
     return int(sequence.generate_state(1, dtype=np.uint64)[0] % np.iinfo(np.int64).max)
+
+
+def _compact_validation(summary: Mapping) -> dict[str, object]:
+    result: dict[str, object] = {
+        key: summary[key]
+        for key in (
+            "schema_version",
+            "checkpoint_step",
+            "ema_decay",
+            "ema_initialization_weight",
+            "corpus",
+            "optimal_action_sets",
+            "delta_raw_minus_ema",
+        )
+        if key in summary
+    }
+    for variant in ("raw", "ema"):
+        if variant not in summary:
+            continue
+        value = summary[variant].get("value", {})
+        policy = summary[variant].get("policy", {})
+        result[variant] = {
+            "value": {
+                key: value[key]
+                for key in (
+                    "positions",
+                    "sign_accuracy",
+                    "mean_squared_error",
+                    "mean_prediction",
+                    "mean_absolute_prediction",
+                    "predicted_positive_fraction",
+                    "target_positive_fraction",
+                )
+                if key in value
+            },
+            "policy": {
+                key: policy[key]
+                for key in (
+                    "positions",
+                    "complete_optimal_set_positions",
+                    "optimal_action_accuracy",
+                    "recorded_best_action_accuracy",
+                )
+                if key in policy
+            },
+        }
+    return result
 
 
 def _cycle_records(output_directory: str | Path) -> tuple[dict, ...]:
@@ -449,6 +544,9 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--self-play-workers", type=int, default=1)
     parser.add_argument("--gating-workers", type=int, default=1)
+    parser.add_argument("--validation-workers", type=int, default=1)
+    parser.add_argument("--validation-batch-size", type=int, default=512)
+    parser.add_argument("--validation-progress-every", type=int, default=500)
     return parser.parse_args(argv)
 
 
@@ -490,6 +588,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         self_play_workers=args.self_play_workers,
         gating_workers=args.gating_workers,
+        oracle_corpus=args.oracle_corpus,
+        validation_workers=args.validation_workers,
+        validation_batch_size=args.validation_batch_size,
+        validation_progress_every=args.validation_progress_every,
     )
     result = coordinator.run_cycle(
         self_play_games=args.self_play_games,

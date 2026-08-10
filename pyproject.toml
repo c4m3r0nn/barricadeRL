@@ -29,6 +29,7 @@ barricade-run-az-cycle = "barricade_rl.az_pipeline:main"
 barricade-training-readiness = "barricade_rl.training_readiness:main"
 barricade-train-az = "barricade_rl.az_learner:main"
 barricade-train-dqn = "barricade_rl.baseline_dqn:main"
+barricade-validate-az-checkpoint = "barricade_rl.m2_acceptance:validation_main"
 barricade-verify = "barricade_rl.verify:main"
 
 [tool.setuptools.packages.find]

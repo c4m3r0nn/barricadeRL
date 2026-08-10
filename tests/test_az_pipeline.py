@@ -28,6 +28,7 @@ def _coordinator(
     cycle_index=None,
     self_play_workers=1,
     gating_workers=1,
+    validation=False,
 ):
     project_config = _tiny_config()
     game = SmallGame()
@@ -50,6 +51,10 @@ def _coordinator(
         observation_shape=game.canonical_observation(state).shape,
         action_count=game.action_count,
     )
+    oracle_corpus = None
+    if validation:
+        oracle_corpus = tmp_path / "oracle.jsonl"
+        oracle_corpus.write_text("{}\n")
     return AlphaZeroCoordinator(
         project_config=project_config,
         game=game,
@@ -63,6 +68,8 @@ def _coordinator(
         cycle_index=cycle_index,
         self_play_workers=self_play_workers,
         gating_workers=gating_workers,
+        oracle_corpus=oracle_corpus,
+        validation_workers=3,
     )
 
 
@@ -206,12 +213,58 @@ def test_cycle_cli_accepts_separate_continuous_learner_checkpoint(tmp_path):
             "8",
             "--gating-workers",
             "8",
+            "--validation-workers",
+            "6",
+            "--validation-batch-size",
+            "1024",
         ]
     )
 
     assert args.learner_checkpoint == learner_checkpoint
     assert args.self_play_workers == 8
     assert args.gating_workers == 8
+    assert args.validation_workers == 6
+    assert args.validation_batch_size == 1024
+
+
+def test_training_cycle_records_raw_and_ema_validation_without_affecting_gate(tmp_path):
+    coordinator = _coordinator(tmp_path, validation=True)
+    calls = []
+
+    def validation_runner(**kwargs):
+        calls.append(kwargs)
+        return {
+            "checkpoint_step": 1,
+            "raw": {
+                "value": {"sign_accuracy": 0.75},
+                "policy": {"optimal_action_accuracy": 0.8},
+            },
+            "ema": {
+                "value": {"sign_accuracy": 0.5},
+                "policy": {"optimal_action_accuracy": 0.6},
+            },
+            "delta_raw_minus_ema": {
+                "value_sign_accuracy": 0.25,
+                "policy_optimal_action_accuracy": 0.2,
+            },
+        }
+
+    result = coordinator.run_cycle(
+        self_play_games=2,
+        learner_steps=1,
+        self_play_runner=_fake_self_play,
+        gate_runner=lambda *args, **kwargs: _gate_result(False),
+        validation_runner=validation_runner,
+    )
+
+    assert not result.promoted
+    assert result.validation["raw"]["value"]["sign_accuracy"] == 0.75
+    assert result.validation_seconds >= 0.0
+    assert calls[0]["workers"] == 3
+    assert calls[0]["network"] is coordinator.learner.network
+    artifact = tmp_path / "run" / "validation" / "validation-cycle-000000-step-000000001.json"
+    assert artifact.is_file()
+    assert '"validation"' in (tmp_path / "run" / "cycles.jsonl").read_text()
 
 
 def test_training_cycle_routes_production_games_through_parallel_workers(
