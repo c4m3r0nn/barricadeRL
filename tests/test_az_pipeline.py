@@ -136,6 +136,8 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert result.parallel_protocol == "serial-v1"
     assert result.self_play_seconds >= 0.0
     assert result.learner_seconds >= 0.0
+    assert result.ema_batch_norm_recalibration_seconds >= 0.0
+    assert result.ema_batch_norm_recalibration["protocol"] == "replay-cumulative-v1"
     assert result.gating_seconds >= 0.0
     assert result.self_play_games_per_hour > 0.0
     assert result.gating_games_per_hour > 0.0
@@ -147,6 +149,10 @@ def test_training_cycle_promotes_and_advances_incumbent(tmp_path):
     assert result.learner_metrics["auxiliary_loss"] >= 0.0
     assert result.learner_metrics["root_policy_entropy"] >= 0.0
     assert result.candidate_checkpoint.is_file()
+    saved_candidate = AlphaZeroNetwork.load_checkpoint(result.candidate_checkpoint)
+    assert saved_candidate.metadata["ema_batch_norm"]["step"] == result.learner_step
+    assert saved_candidate.metadata["ema_batch_norm"]["cycle_index"] == 0
+    assert saved_candidate.metadata["ema_batch_norm"]["elapsed_seconds"] >= 0.0
     assert result.incumbent_checkpoint.is_file()
     assert result.incumbent_checkpoint.parent.name == "gated"
     assert coordinator.incumbent_checkpoint == result.incumbent_checkpoint
@@ -217,6 +223,8 @@ def test_cycle_cli_accepts_separate_continuous_learner_checkpoint(tmp_path):
             "6",
             "--validation-batch-size",
             "1024",
+            "--ema-bn-recalibration-batch-size",
+            "2048",
         ]
     )
 
@@ -225,6 +233,7 @@ def test_cycle_cli_accepts_separate_continuous_learner_checkpoint(tmp_path):
     assert args.gating_workers == 8
     assert args.validation_workers == 6
     assert args.validation_batch_size == 1024
+    assert args.ema_bn_recalibration_batch_size == 2048
 
 
 def test_training_cycle_records_raw_and_ema_validation_without_affecting_gate(tmp_path):

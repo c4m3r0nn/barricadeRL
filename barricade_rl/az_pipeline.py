@@ -44,6 +44,8 @@ class TrainingCycleResult:
     parallel_protocol: str
     self_play_seconds: float
     learner_seconds: float
+    ema_batch_norm_recalibration_seconds: float
+    ema_batch_norm_recalibration: dict[str, int | str]
     validation_seconds: float
     gating_seconds: float
     self_play_games_per_hour: float
@@ -129,6 +131,7 @@ class AlphaZeroCoordinator:
         validation_workers: int = 1,
         validation_batch_size: int = 512,
         validation_progress_every: int = 500,
+        ema_bn_recalibration_batch_size: int = 512,
     ) -> None:
         if not run_id or not git_commit:
             raise ValueError("run_id and git_commit are required")
@@ -154,14 +157,18 @@ class AlphaZeroCoordinator:
         self.validation_workers = int(validation_workers)
         self.validation_batch_size = int(validation_batch_size)
         self.validation_progress_every = int(validation_progress_every)
+        self.ema_bn_recalibration_batch_size = int(ema_bn_recalibration_batch_size)
         if min(
             self.self_play_workers,
             self.gating_workers,
             self.validation_workers,
             self.validation_batch_size,
             self.validation_progress_every,
+            self.ema_bn_recalibration_batch_size,
         ) < 1:
-            raise ValueError("worker counts, validation batch size, and progress must be positive")
+            raise ValueError(
+                "worker counts, validation and recalibration batch sizes, and progress must be positive"
+            )
         self.oracle_corpus = None if oracle_corpus is None else Path(oracle_corpus)
         if self.oracle_corpus is not None and not self.oracle_corpus.is_file():
             raise FileNotFoundError(self.oracle_corpus)
@@ -290,6 +297,21 @@ class AlphaZeroCoordinator:
             self.replay_buffer,
             steps=completed_learner_steps,
         )
+        learner_seconds = perf_counter() - learner_started
+        recalibration_started = perf_counter()
+        recalibration = self.learner.recalibrate_ema_batch_norm(
+            self.replay_buffer,
+            batch_size=self.ema_bn_recalibration_batch_size,
+        )
+        ema_batch_norm_recalibration_seconds = (
+            perf_counter() - recalibration_started
+        )
+        self.learner.network.metadata["ema_batch_norm"].update(
+            {
+                "cycle_index": self.cycle_index,
+                "elapsed_seconds": ema_batch_norm_recalibration_seconds,
+            }
+        )
         step = self.learner.step
         candidate_directory = self.output_directory / "candidates"
         candidate_directory.mkdir(parents=True, exist_ok=True)
@@ -302,7 +324,6 @@ class AlphaZeroCoordinator:
             git_commit=self.git_commit,
             config_hash=self.config_hash,
         )
-        learner_seconds = perf_counter() - learner_started
 
         validation_started = perf_counter()
         validation = None
@@ -405,6 +426,10 @@ class AlphaZeroCoordinator:
             ),
             self_play_seconds=self_play_seconds,
             learner_seconds=learner_seconds,
+            ema_batch_norm_recalibration_seconds=(
+                ema_batch_norm_recalibration_seconds
+            ),
+            ema_batch_norm_recalibration=recalibration.to_dict(),
             validation_seconds=validation_seconds,
             gating_seconds=gating_seconds,
             self_play_games_per_hour=(
@@ -547,6 +572,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--validation-workers", type=int, default=1)
     parser.add_argument("--validation-batch-size", type=int, default=512)
     parser.add_argument("--validation-progress-every", type=int, default=500)
+    parser.add_argument("--ema-bn-recalibration-batch-size", type=int, default=512)
     return parser.parse_args(argv)
 
 
@@ -592,6 +618,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         validation_workers=args.validation_workers,
         validation_batch_size=args.validation_batch_size,
         validation_progress_every=args.validation_progress_every,
+        ema_bn_recalibration_batch_size=args.ema_bn_recalibration_batch_size,
     )
     result = coordinator.run_cycle(
         self_play_games=args.self_play_games,

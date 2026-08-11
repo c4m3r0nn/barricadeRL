@@ -70,3 +70,21 @@ def test_alpha_zero_network_is_mcts_evaluator_compatible():
     assert 0 <= result.action < game.action_count
     assert result.policy.shape == (game.action_count,)
     assert abs(float(result.policy.sum()) - 1.0) < 1e-6
+
+
+def test_ema_update_treats_batch_norm_running_statistics_as_buffers():
+    network = AlphaZeroNetwork.from_config(_tiny_config(), seed=9)
+    ema_mean_before = network.ema_params["stem_bn_mean"].copy()
+    ema_var_before = network.ema_params["stem_bn_var"].copy()
+    ema_weight_before = network.ema_params["stem_w"].copy()
+    network.params["stem_bn_mean"] += 3.0
+    network.params["stem_bn_var"] += 4.0
+    network.params["stem_w"] += 2.0
+
+    network.update_ema(decay=0.5)
+
+    np.testing.assert_array_equal(network.ema_params["stem_bn_mean"], ema_mean_before)
+    np.testing.assert_array_equal(network.ema_params["stem_bn_var"], ema_var_before)
+    np.testing.assert_allclose(
+        network.ema_params["stem_w"], ema_weight_before + 1.0, atol=2e-7
+    )

@@ -94,3 +94,33 @@ def test_alpha_zero_replay_rejects_illegal_policy_mass():
         assert "illegal action" in str(exc)
     else:
         raise AssertionError("policy mass on illegal actions must be rejected")
+
+
+def test_observation_batches_are_deterministic_and_do_not_consume_replay():
+    game = SmallGame()
+    state = game.initial_state()
+    mask = game.legal_actions(state)
+    policy = mask.astype(np.float32) / mask.sum()
+    buffer = AlphaZeroReplayBuffer(
+        capacity=8,
+        observation_shape=game.canonical_observation(state).shape,
+        action_count=game.action_count,
+    )
+    for action in np.flatnonzero(mask)[:3]:
+        next_state = game.next_state(state, int(action))
+        next_mask = game.legal_actions(next_state)
+        next_policy = next_mask.astype(np.float32) / next_mask.sum()
+        buffer.add(make_replay_sample(game, next_state, policy=next_policy, value=0.0))
+    counters_before = (buffer.total_positions_added, buffer.gradient_samples_consumed)
+
+    first = tuple(buffer.observation_batches(batch_size=2))
+    second = tuple(buffer.observation_batches(batch_size=2))
+
+    assert [batch.shape[0] for batch in first] == [2, 1]
+    for left, right in zip(first, second):
+        np.testing.assert_array_equal(left, right)
+    np.testing.assert_array_equal(
+        np.concatenate(first),
+        np.stack([sample.observation for sample in buffer.samples]),
+    )
+    assert (buffer.total_positions_added, buffer.gradient_samples_consumed) == counters_before

@@ -81,9 +81,9 @@ Implemented:
 - AlphaZero network inference/checkpoint contract with batch-normalized global-pooling residual blocks, flat board-size-dependent policy head, opponent-policy head, tanh value head, auxiliary distance head, MCTS evaluator compatibility, and EMA checkpoint state.
 - Versioned AlphaZero replay sample/buffer contract with policy-mask validation, value bounds, shortest-path and following-ply opponent-policy targets, run/config/git provenance, game and scoring metadata, true gradient-samples-per-generated-position accounting, batch sampling, and NPZ persistence.
 - Self-play actor contract with mandatory 25/75 full/fast search randomization, full-search-only replay recording, the 16-ply temperature schedule, weak raw-policy opening diversification, pre-injection target invalidation, final mover-perspective values, and replay-buffer ingestion.
-- PyTorch gradient learner covering the full trunk and all heads, combined policy/value/distance/opponent-policy/L2 loss, momentum SGD, fixed learning-rate drops, on-the-fly mirror augmentation, EMA updates, stale-replay overconsumption protection, resumable momentum checkpoints, and the `barricade-train-az` command.
+- PyTorch gradient learner covering the full trunk and all heads, combined policy/value/distance/opponent-policy/L2 loss, momentum SGD, fixed learning-rate drops, on-the-fly mirror augmentation, trainable-parameter EMA updates, stale-replay overconsumption protection, resumable momentum checkpoints, and the `barricade-train-az` command. BatchNorm running means and variances are treated as activation-statistic buffers rather than EMA weights and are deterministically recomputed from replay after each learner phase.
 - Deterministic checkpoint gate using 100 unique legal prefixes paired with colours swapped (200 noise-free 800-simulation games), promotion at a 0.55 score rate, full start-state audit metadata, permanent gated-checkpoint manifests, and a generic evaluation harness that supports the 5x5 action/wall contract.
-- Correctness-first `barricade-run-az-cycle` coordinator: persisted cycle indices, independent deterministic seed streams, globally unique game IDs and artifact paths, self-play from the gated incumbent EMA network, replay persistence, bounded continuous learning, candidate checkpointing, raw-versus-EMA oracle validation, gating, and promotion archival. Rejection leaves the self-play incumbent unchanged without discarding learner weights, momentum, EMA, step, or RNG state. After self-play determines the available replay headroom, oversized learner requests are clamped to the four-samples-per-position limit instead of failing mid-phase. Cycle records include requested/completed learner steps, the final-step losses, root-policy entropy, learning rate, replay-consumption ratio, validation deltas, and a detailed validation artifact path.
+- Correctness-first `barricade-run-az-cycle` coordinator: persisted cycle indices, independent deterministic seed streams, globally unique game IDs and artifact paths, self-play from the gated incumbent EMA network, replay persistence, bounded continuous learning, replay-based EMA BatchNorm recalibration before checkpoint/validation/gating, candidate checkpointing, raw-versus-EMA oracle validation, gating, and promotion archival. Rejection leaves the self-play incumbent unchanged without discarding learner weights, momentum, EMA, step, or RNG state. After self-play determines the available replay headroom, oversized learner requests are clamped to the four-samples-per-position limit instead of failing mid-phase. Cycle records include requested/completed learner steps, the final-step losses, root-policy entropy, learning rate, replay-consumption ratio, recalibration provenance/timing, validation deltas, and a detailed validation artifact path.
 - Supervisor-compliant 200-ply cap with per-cycle cap telemetry and a run-latched automatic shortest-path adjudication switch on the cycle after three consecutive self-play cap fractions exceed 5%; every replay sample records the scoring scheme used.
 - Training-readiness preflight via `barricade-training-readiness`, reporting oracle, replay, MCTS, network, self-play, and learner blockers before any proper training run.
 - Handover compliance tests for M2 config constants, Gymnasium usage, masked softmax call sites, terminal reward/gamma choices, dashboard metrics, and the flat policy-head decision.
@@ -93,13 +93,12 @@ Implemented:
 - Formal, resumable M2 checkpoint evaluation via `barricade-evaluate-m2`. It validates corpus/checkpoint provenance, derives every exact optimal move rather than comparing against one arbitrary solver move, reports batched value accuracy, phase splits, bias, and calibration, and evaluates deterministic 800-simulation MCTS in crash-safe parallel workers. Its summary keeps the full-wall initial-position proof and monotone fixed-ladder history visibly blocked until those evidence sources exist.
 - Automatic development validation and the standalone `barricade-validate-az-checkpoint` command compare raw and EMA weights on all 5,000 exact positions after every learner phase. They report value sign/MSE/bias/calibration, complete-optimal-set move accuracy, raw-minus-EMA deltas, and the remaining mathematical contribution of EMA initialization. Solver-optimal sets are cached by corpus and reused across checkpoints; this telemetry never changes weights, replay, self-play, gating, or promotion decisions.
 
-Latest local M2 training and diagnostic result (2026-08-10):
+Latest local M2 training and diagnostic result (2026-08-11):
 
-- Cycle 14 generated 17,610 positions from 2,048 games at 3,503 games/hour. The MPS learner completed all 100 requested updates in 11.25 seconds at a healthy 3.298 samples per generated position. Self-play cap fraction was 0.0439.
-- EMA step 336 scored 91.5/200 against gated step 186 for a 0.4575 score rate and was correctly rejected. Gate cap fraction improved to 0.105, but gating still took 41.6 minutes and remains the dominant fixed cost.
-- Full 5,000-position diagnostics reveal normal early EMA lag rather than absent raw learning. Step 336 raw weights reach 65.44% value-sign and 90.98% complete-optimal-set move accuracy; EMA reaches 50.82% and 87.40%. Raw leads EMA by 14.62 and 3.58 percentage points respectively.
-- With decay 0.999 at step 336, the EMA initialization contribution is still 71.45%. The supervisor requires EMA for self-play and gating, so the learner must continue for materially more updates; raw weights remain diagnostic only.
-- The replay targets are approximately balanced, and the raw network's improvement argues against an immediate mover-frame sign bug. Training is still extremely early at 336 of the nominal 300,000 planned steps.
+- Cycle 15 generated 67,131 positions from 8,192 games at 3,522 games/hour. The MPS learner completed all 500 requested updates in 53.19 seconds at a healthy 3.582 samples per generated position. Self-play cap fraction was 0.0383.
+- Step 836 originally scored 98/200 against gated step 186 and was correctly rejected. Diagnostics then exposed a real implementation defect: EMA had been averaging BatchNorm running means and variances as though they were learned weights. This made the EMA value head predict positive on every oracle position despite healthy raw learning.
+- The correction keeps BatchNorm statistics out of weight EMA and recomputes them from all replay observations, in deterministic insertion order, before save, validation, or gating. Tests prove this changes neither raw weights, EMA trainable weights, momentum, learner RNG, nor replay accounting.
+- A non-destructive derivative of step 836 was recalibrated from all 122,085 replay positions in 3.97 seconds on MPS. Its EMA value-sign accuracy improved from 47.36% to 62.40%, MSE from 1.206 to 0.921, and positive-prediction fraction from 100% to 60.32%. On exactly the original cycle-15 match seed, start seed, and 100 paired positions, the repaired EMA then beat gated step 186 by 120 wins to 71 with 9 draws: a 62.25% score rate, up from the broken checkpoint's 49.00%. It passed the 55% gate and is archived as gated step 836. Raw remains stronger at 70.06% sign accuracy, so M2 is progressing but is not complete against the supervisor's 99% acceptance thresholds.
 - A phase-interleaved 32-position acceptance-path smoke test previously selected solver-optimal moves on 31/32 positions (96.875%) with 800-simulation MCTS, but it is not the required 5,000-position result.
 - M2 is therefore not complete. Value accuracy is the immediate training blocker; the full-wall initial second-player-win proof, a complete 5,000-position MCTS run, and monotone fixed-ladder Elo evidence are also outstanding.
 - Because this corpus has now informed training decisions, treat it as validation data. Freeze a newly generated exact corpus for the eventual final held-out acceptance run.
@@ -325,7 +324,8 @@ Run one complete self-play, learner, and gating cycle only after the oracle audi
   --self-play-workers 8 \
   --gating-workers 8 \
   --validation-workers 8 \
-  --validation-batch-size 512
+  --validation-batch-size 512 \
+  --ema-bn-recalibration-batch-size 512
 ```
 
 On the first cycle, omitting `--learner-checkpoint` initializes the learner from
@@ -339,10 +339,48 @@ per-game seeds are fixed before work is dispatched, workers never mutate replay,
 and the parent merges completed games in index order. Cycle JSON includes the
 effective worker counts, phase timings, and games/hour.
 The supplied oracle corpus is also used as development validation data after the
-candidate checkpoint is written. The cycle stores compact raw/EMA metrics and
+EMA BatchNorm buffers are recalibrated and the candidate checkpoint is written. The cycle stores compact raw/EMA metrics and
 `validation_seconds` in `cycles.jsonl`, with phase calibration in a detailed
 `validation/validation-cycle-...json` artifact. Complete optimal-action sets are
 derived once into `validation/optimal_actions.jsonl` and reused thereafter.
+
+Repair the EMA BatchNorm buffers in a historical learner checkpoint without
+overwriting it or changing any trainable state:
+
+```bash
+.venv/bin/barricade-recalibrate-ema-bn \
+  --config configs/m2_5x5.json \
+  --checkpoint artifacts/m2/m2-run-002/candidates/candidate-cycle-000015-step-000000836.npz \
+  --replay artifacts/m2/m2-run-002/replay.npz \
+  --output artifacts/m2/m2-run-002/candidates/candidate-cycle-000015-step-000000836-ema-bn-recalibrated.npz \
+  --batch-size 512 \
+  --device mps \
+  --git-commit YOUR_GIT_COMMIT
+```
+
+The derivative records the source path and SHA-256, replay population, protocol,
+device, batch count, and code provenance. The command refuses to overwrite the
+source or an existing output.
+
+To compare a repaired historical candidate on exactly the same paired starts as
+its original gate, pass the recorded match seed and start seed separately:
+
+```bash
+.venv/bin/barricade-gate-az \
+  --config configs/m2_5x5.json \
+  --candidate artifacts/m2/m2-run-002/candidates/candidate-cycle-000015-step-000000836-ema-bn-recalibrated.npz \
+  --incumbent artifacts/m2/m2-run-002/gated/gated-step-000000186.npz \
+  --gated-directory artifacts/m2/m2-run-002/gated \
+  --result artifacts/m2/m2-run-002/gating/gate-cycle-000015-step-000000836-ema-bn-recalibrated.json \
+  --run-id m2-run-002 \
+  --git-commit YOUR_GIT_COMMIT \
+  --seed 9207936133064362 \
+  --start-seed 4612809871699731153 \
+  --workers 8
+```
+
+The gate command exits with status 1 when a candidate is correctly rejected;
+the JSON result is still written in that case.
 
 Backfill or inspect a checkpoint without training or gating:
 

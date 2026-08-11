@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 
@@ -212,6 +213,16 @@ class AlphaZeroReplayBuffer:
                 [sample.has_opponent_policy_target for sample in samples], dtype=np.bool_
             ),
         )
+
+    def observation_batches(self, *, batch_size: int) -> Iterator[np.ndarray]:
+        """Yield insertion-ordered observations without sampling or consumption."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        for start in range(0, self.size, batch_size):
+            samples = self._samples[start : start + batch_size]
+            yield np.stack([sample.observation for sample in samples]).astype(
+                np.float32, copy=False
+            )
 
     def save_npz(self, path: str | Path) -> None:
         output = Path(path)

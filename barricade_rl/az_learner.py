@@ -1,18 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Mapping
-from typing import Sequence
+from time import perf_counter
+from typing import Iterator, Mapping, Sequence
 
 import numpy as np
 import torch
 import torch.nn.functional as torch_functional
 from torch import nn
 
-from .az_network import AlphaZeroNetwork, AlphaZeroNetworkConfig
+from .az_network import (
+    AlphaZeroNetwork,
+    AlphaZeroNetworkConfig,
+    is_batch_norm_running_stat,
+)
 from .az_replay import AlphaZeroReplayBuffer, ReplayBatch
 from .config import config_hash as calculate_config_hash
 from .config import load_config, small_game_from_config
@@ -129,22 +134,51 @@ class LearnerMetrics:
         return asdict(self)
 
 
+@dataclass(frozen=True, slots=True)
+class BatchNormRecalibrationResult:
+    protocol: str
+    positions: int
+    batches: int
+    batch_size: int
+    step: int
+    device: str
+    replay_total_positions_added: int
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class _DifferentiableNetwork(nn.Module):
     def __init__(self, network: AlphaZeroNetwork) -> None:
         super().__init__()
         self.config = network.config
+        self._network_tensor_names = tuple(network.params)
         self.parameters_by_name = nn.ParameterDict(
             {
-                name: nn.Parameter(
-                    torch.from_numpy(value.copy()),
-                    requires_grad=not name.endswith(("_bn_mean", "_bn_var")),
-                )
+                name: nn.Parameter(torch.from_numpy(value.copy()))
                 for name, value in network.params.items()
+                if not is_batch_norm_running_stat(name)
             }
         )
+        self._batch_norm_buffer_attributes: dict[str, str] = {}
+        for name, value in network.params.items():
+            if not is_batch_norm_running_stat(name):
+                continue
+            attribute = f"buffer__{name}"
+            self.register_buffer(attribute, torch.from_numpy(value.copy()))
+            self._batch_norm_buffer_attributes[name] = attribute
+
+    def __getitem__(self, name: str) -> torch.Tensor:
+        if name in self.parameters_by_name:
+            return self.parameters_by_name[name]
+        return getattr(self, self._batch_norm_buffer_attributes[name])
+
+    def tensors_by_name(self) -> Iterator[tuple[str, torch.Tensor]]:
+        for name in self._network_tensor_names:
+            yield name, self[name]
 
     def forward(self, observations: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        parameters = self.parameters_by_name
+        parameters = self
         x = torch.relu(
             self._batch_norm(
                 torch_functional.conv2d(
@@ -196,7 +230,7 @@ class _DifferentiableNetwork(nn.Module):
         return policy, value, distances, opponent_policy
 
     def _policy_head(self, trunk: torch.Tensor, prefix: str) -> torch.Tensor:
-        parameters = self.parameters_by_name
+        parameters = self
         x = torch.relu(
             self._batch_norm(
                 torch_functional.conv2d(
@@ -212,7 +246,7 @@ class _DifferentiableNetwork(nn.Module):
         )
 
     def _value_head(self, trunk: torch.Tensor) -> torch.Tensor:
-        parameters = self.parameters_by_name
+        parameters = self
         x = torch.relu(
             self._batch_norm(
                 torch_functional.conv2d(
@@ -233,7 +267,7 @@ class _DifferentiableNetwork(nn.Module):
         ).flatten()
 
     def _distance_head(self, trunk: torch.Tensor) -> torch.Tensor:
-        parameters = self.parameters_by_name
+        parameters = self
         x = torch.relu(
             torch_functional.conv2d(
                 trunk, parameters["distance_conv_w"], parameters["distance_conv_b"]
@@ -244,7 +278,7 @@ class _DifferentiableNetwork(nn.Module):
         )
 
     def _batch_norm(self, x: torch.Tensor, prefix: str) -> torch.Tensor:
-        parameters = self.parameters_by_name
+        parameters = self
         return torch_functional.batch_norm(
             x,
             parameters[f"{prefix}_bn_mean"],
@@ -297,7 +331,7 @@ class AlphaZeroLearner:
         learning_rate = self.config.learning_rate(self.step)
 
         with torch.no_grad():
-            for name, parameter in self.model.parameters_by_name.items():
+            for name, parameter in self.model.tensors_by_name():
                 if parameter.grad is None:
                     self.network.params[name] = (
                         parameter.detach().cpu().numpy().astype(np.float32).copy()
@@ -344,6 +378,72 @@ class AlphaZeroLearner:
                 on_step(latest)
         assert latest is not None
         return latest
+
+    def recalibrate_ema_batch_norm(
+        self,
+        replay_buffer: AlphaZeroReplayBuffer,
+        *,
+        batch_size: int = 512,
+    ) -> BatchNormRecalibrationResult:
+        """Recompute EMA BatchNorm buffers from replay without training mutations.
+
+        EMA is appropriate for learned parameters, but BatchNorm running means and
+        variances are activation statistics.  They are reset and accumulated in
+        deterministic replay insertion order using the EMA trainable parameters.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        if replay_buffer.size < 1:
+            raise ValueError("EMA BatchNorm recalibration requires non-empty replay")
+
+        calibration_params = {
+            name: value.copy() for name, value in self.network.ema_params.items()
+        }
+        for name, value in calibration_params.items():
+            if name.endswith("_bn_mean"):
+                value.fill(0.0)
+            elif name.endswith("_bn_var"):
+                value.fill(1.0)
+        calibration_network = AlphaZeroNetwork(
+            self.network.config,
+            calibration_params,
+        )
+        calibration_model = _DifferentiableNetwork(calibration_network).to(self.device)
+        calibration_model.train()
+
+        batches = 0
+        positions_seen = 0
+        with torch.no_grad():
+            for observations in replay_buffer.observation_batches(batch_size=batch_size):
+                current_batch_size = int(observations.shape[0])
+                momentum = current_batch_size / (positions_seen + current_batch_size)
+                calibration_model.config = replace(
+                    self.network.config,
+                    batch_norm_momentum=momentum,
+                )
+                calibration_model(
+                    torch.from_numpy(np.ascontiguousarray(observations)).to(self.device)
+                )
+                positions_seen += current_batch_size
+                batches += 1
+
+        for name, parameter in calibration_model.tensors_by_name():
+            if is_batch_norm_running_stat(name):
+                self.network.ema_params[name] = (
+                    parameter.detach().cpu().numpy().astype(np.float32).copy()
+                )
+
+        result = BatchNormRecalibrationResult(
+            protocol="replay-cumulative-v1",
+            positions=positions_seen,
+            batches=batches,
+            batch_size=int(batch_size),
+            step=self.step,
+            device=str(self.device),
+            replay_total_positions_added=replay_buffer.total_positions_added,
+        )
+        self.network.metadata["ema_batch_norm"] = result.to_dict()
+        return result
 
     def _losses(self, batch: ReplayBatch) -> dict[str, torch.Tensor]:
         observations = torch.from_numpy(np.ascontiguousarray(batch.observations)).to(self.device)
@@ -586,6 +686,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("--replay is required when --steps is positive")
         replay = AlphaZeroReplayBuffer.load_npz(args.replay)
         latest = learner.train(replay, steps=args.steps)
+        recalibration = learner.recalibrate_ema_batch_norm(
+            replay,
+            batch_size=learner.config.batch_size,
+        )
     learner.save_checkpoint(
         args.output,
         run_id=args.run_id,
@@ -595,6 +699,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if latest is not None:
         replay.save_npz(args.replay)
         payload = latest.to_dict()
+        payload["ema_batch_norm_recalibration"] = recalibration.to_dict()
     else:
         payload = {
             "step": 0,
@@ -602,6 +707,95 @@ def main(argv: Sequence[str] | None = None) -> int:
             "run_id": args.run_id,
             "config_hash": cfg_hash,
         }
+    print(json.dumps(payload, sort_keys=True))
+    return 0
+
+
+def _parse_recalibration_args(
+    argv: Sequence[str] | None = None,
+) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Create a checkpoint derivative with EMA BatchNorm statistics "
+            "recomputed from replay."
+        )
+    )
+    parser.add_argument("--config", type=Path, default=Path("configs/m2_5x5.json"))
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--replay", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--git-commit", required=True)
+    return parser.parse_args(argv)
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def recalibration_main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_recalibration_args(argv)
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be positive")
+    if args.checkpoint.resolve() == args.output.resolve():
+        raise ValueError("--output must differ from --checkpoint")
+    if args.output.exists():
+        raise FileExistsError(args.output)
+
+    project_config = load_config(args.config)
+    game = small_game_from_config(project_config)
+    cfg_hash = calculate_config_hash(project_config)
+    learner = AlphaZeroLearner.load_checkpoint(
+        args.checkpoint,
+        game,
+        device=args.device,
+    )
+    checkpoint_hash = learner.network.metadata.get("config_hash")
+    if checkpoint_hash not in (None, cfg_hash):
+        raise ValueError("checkpoint config hash does not match --config")
+    source_run_id = learner.network.metadata.get("run_id")
+    source_git_commit = learner.network.metadata.get("git_commit")
+    if not source_run_id or not source_git_commit:
+        raise ValueError("source checkpoint lacks run_id or git_commit provenance")
+    replay = AlphaZeroReplayBuffer.load_npz(args.replay)
+    source_sha256 = _file_sha256(args.checkpoint)
+    source_replay_sha256 = _file_sha256(args.replay)
+    started = perf_counter()
+    result = learner.recalibrate_ema_batch_norm(
+        replay,
+        batch_size=args.batch_size,
+    )
+    elapsed_seconds = perf_counter() - started
+    learner.network.metadata["ema_batch_norm"].update(
+        {
+            "source_checkpoint": str(args.checkpoint),
+            "source_sha256": source_sha256,
+            "source_replay": str(args.replay),
+            "source_replay_sha256": source_replay_sha256,
+            "recalibration_git_commit": args.git_commit,
+            "elapsed_seconds": elapsed_seconds,
+        }
+    )
+    learner.save_checkpoint(
+        args.output,
+        run_id=str(source_run_id),
+        git_commit=str(source_git_commit),
+        config_hash=cfg_hash,
+    )
+    payload = {
+        "output": str(args.output),
+        "source_checkpoint": str(args.checkpoint),
+        "source_sha256": source_sha256,
+        "source_replay": str(args.replay),
+        "source_replay_sha256": source_replay_sha256,
+        "elapsed_seconds": elapsed_seconds,
+        "recalibration": result.to_dict(),
+    }
     print(json.dumps(payload, sort_keys=True))
     return 0
 

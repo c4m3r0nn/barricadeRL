@@ -261,6 +261,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--git-commit", required=True)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--start-seed", type=int, default=None)
     parser.add_argument("--workers", type=int, default=1)
     return parser.parse_args(argv)
 
@@ -272,6 +273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     project_config = load_config(args.config)
     game = small_game_from_config(project_config)
     gating_config = GatingConfig.from_project_config(project_config)
+    start_seed = args.seed if args.start_seed is None else args.start_seed
     candidate_network = AlphaZeroNetwork.load_checkpoint(args.candidate)
     incumbent_network = AlphaZeroNetwork.load_checkpoint(args.incumbent)
     candidate = NetworkMCTSPolicy(
@@ -292,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         starts = sample_gating_start_states(
             game,
             count=gating_config.games_per_color,
-            seed=args.seed,
+            seed=start_seed,
             min_plies=gating_config.start_min_plies,
             max_plies=gating_config.start_max_plies,
         )
@@ -305,7 +307,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
             workers=args.workers,
             initial_states=starts,
-            start_seed=args.seed,
+            start_seed=start_seed,
         )
     else:
         result = gate_candidate(
@@ -314,6 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             game=game,
             config=gating_config,
             seed=args.seed,
+            start_seed=start_seed,
         )
     args.result.parent.mkdir(parents=True, exist_ok=True)
     args.result.write_text(json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n")

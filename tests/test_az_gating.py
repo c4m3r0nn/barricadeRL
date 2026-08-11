@@ -36,10 +36,13 @@ def test_gate_cli_accepts_parallel_workers(tmp_path):
             "commit",
             "--workers",
             "8",
+            "--start-seed",
+            "123",
         ]
     )
 
     assert args.workers == 8
+    assert args.start_seed == 123
 
 
 def _match(candidate, opponent, *, games_per_color, seed, game, wins, initial_states=None):

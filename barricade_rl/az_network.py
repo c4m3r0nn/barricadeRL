@@ -8,6 +8,11 @@ from typing import Mapping
 import numpy as np
 
 
+def is_batch_norm_running_stat(name: str) -> bool:
+    """Return whether a parameter entry is a non-trainable BatchNorm buffer."""
+    return name.endswith(("_bn_mean", "_bn_var"))
+
+
 @dataclass(frozen=True, slots=True)
 class AlphaZeroNetworkConfig:
     board_size: int
@@ -136,6 +141,8 @@ class AlphaZeroNetwork:
         if not 0.0 <= decay <= 1.0:
             raise ValueError("EMA decay must be between 0 and 1")
         for name, value in self.params.items():
+            if is_batch_norm_running_stat(name):
+                continue
             self.ema_params[name] = (decay * self.ema_params[name] + (1.0 - decay) * value).astype(np.float32)
 
     def save_checkpoint(self, path: str | Path, *, step: int, config_hash: str | None = None) -> None:
